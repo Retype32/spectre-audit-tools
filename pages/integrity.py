@@ -508,7 +508,7 @@ class IntegrityPage(QWidget):
             exp_col = EXPECTED_TOTAL if EXPECTED_TOTAL in disc_df.columns else None
 
             def _clean_id(v):
-                """Convert float IDs like 66856507.0 → '66856507'."""
+                """Convert float IDs like 12345678.0 → '12345678'."""
                 try:
                     f = float(v)
                     return str(int(f)) if not pd.isna(f) else str(v)

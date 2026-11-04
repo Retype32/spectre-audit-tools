@@ -1,0 +1,17 @@
+{
+  "prod_base_path": "W:\\Path\\To\\Spectre\\Files",
+
+  "non_vms_base_folder": "X:\\Path\\To\\NON VMS\\Irish Rail TVM's",
+  "jollyes_base_folder": "X:\\Path\\To\\NON VMS\\Jollyes",
+  "dbc_folder": "X:\\Path\\To\\DBC's",
+  "non_vms_text_prefix": "",
+
+  "no3_database_path": "C:\\Path\\To\\No. 3 Database\\No. 3 Database.xlsx",
+  "no3_template_path": "C:\\Path\\To\\No. 3 Database\\SL Template.xlsx",
+  "no3_tracker_dir": "C:\\Path\\To\\No. 3 Database",
+  "no3_output_base": "X:\\Path\\To\\SL79 forms",
+
+  "ten_hour_operator_ids": [],
+
+  "admin_password": ""
+}

@@ -27,11 +27,11 @@ import statistics
 
 import pandas as pd
 
-from config import DUPLICATE_VERDICTS_DB, MISTAKES_DB, MISTAKE_TYPES
+from config import DUPLICATE_VERDICTS_DB, MISTAKES_DB, MISTAKE_TYPES, TEN_HOUR_OP_IDS
 
 
 # ── Operator / shift constants ────────────────────────────────────────────────
-_TEN_HOUR_OP_IDS    = {"41015", "9876"}
+_TEN_HOUR_OP_IDS    = TEN_HOUR_OP_IDS   # set in local_settings.json
 _TARGET_PER_HOUR    = 25
 _DEFAULT_TARGET_SLIPS = 200
 _DEFAULT_TARGET_VALUE = 50_000.0

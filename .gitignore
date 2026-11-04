@@ -7,3 +7,9 @@ dist/
 *.db
 *.csv
 *.pdf
+
+# Real data — never commit
+local_settings.json
+*.xlsx
+*.xls
+*.xlsm

@@ -62,7 +62,25 @@ VERSION_MODE = "TEST"   # uses Desktop\Audit_System_Files
 
 In **TEST** mode, Spectre creates all its working folders on your Desktop inside a folder called `Audit_System_Files`. This is safe for evaluation and does not touch any network drives.
 
-In production mode, update the `BASE_PATH` variable to point to your shared network location.
+In production mode, set `prod_base_path` in `local_settings.json` (see below) to point to your shared network location.
+
+### Local settings (paths, IDs, password)
+
+Anything specific to your site — real folder paths, staff names/IDs and the admin password — lives in `local_settings.json`, **not** in the code. This file is git-ignored so it never ends up in the repository.
+
+1. Copy `local_settings.example.json` to `local_settings.json` in the same folder as `config.py` (or next to `Spectre.exe` for a packaged build).
+2. Fill in the values you need. Any key you leave out falls back to a folder under `BASE_PATH`.
+
+| Key | Used by |
+|-----|---------|
+| `prod_base_path` | `BASE_PATH` when `VERSION_MODE` is not `"TEST"` |
+| `non_vms_base_folder`, `jollyes_base_folder`, `dbc_folder` | NON-VMS Reports default paths |
+| `non_vms_text_prefix` | Text placed before each NON-VMS summary line copied to the clipboard |
+| `no3_database_path`, `no3_template_path`, `no3_tracker_dir`, `no3_output_base` | No.3 Account tab |
+| `ten_hour_operator_ids` | Operator IDs scored on a 10-hour shift (everyone else is 8 hours) |
+| `admin_password` | Cashier Database danger-zone buttons (locked if not set) |
+
+> **Never commit real data.** Reports, slip audits, cashier databases and any file with staff names or figures must stay out of the repository. `.gitignore` already excludes `local_settings.json`, `.xlsx`, `.xls`, `.csv` and `.pdf` files.
 
 ---
 
@@ -256,7 +274,7 @@ Double-click any row to open a confirmation prompt to delete that cashier.
 
 #### Danger zone
 
-Three delete buttons at the top require a **password** (`7861`) followed by a confirmation prompt:
+Three delete buttons at the top require the **admin password** (set as `admin_password` in `local_settings.json`) followed by a confirmation prompt. If no password is configured, the buttons stay locked.
 
 | Button | What it deletes |
 |--------|----------------|
@@ -323,13 +341,13 @@ Results show every matching row across all scanned files, with the source file n
 2. Verify or update the three paths:
    - **Database** — the master `No. 3 Database.xlsx` file containing the entries to process.
    - **Template** — the `SL Template.xlsx` file used as the base for each generated form.
-   - Output destination is set via `NO3_OUTPUT_BASE` in `config.py`.
+   - Output destination is set via `no3_output_base` in `local_settings.json`.
 3. Review the entries shown in the preview table.
 4. Click **Generate Forms** to produce the SL79 documents.
 
-Generated forms are saved to `P:\DMS\11. SL79 no 3 account\SL79 forms\` (or the path configured in `config.py`). A tracker file is also updated in `NO3_TRACKER_DIR` to record which entries have been processed.
+Generated forms are saved to the `no3_output_base` folder (default: `SL79 forms` under `BASE_PATH`). A tracker file is also updated in `no3_tracker_dir` to record which entries have been processed.
 
-> **Important:** Paths in the No.3 Account tab are hardcoded to specific user and network locations in `config.py`. Update `NO3_DATABASE_PATH`, `NO3_TEMPLATE_PATH`, `NO3_TRACKER_DIR`, and `NO3_OUTPUT_BASE` before using this tab in a new environment.
+> **Important:** Set `no3_database_path`, `no3_template_path`, `no3_tracker_dir` and `no3_output_base` in `local_settings.json` before using this tab in a new environment.
 
 ---
 
@@ -455,7 +473,7 @@ Discrepancy data is only archived when a report with a `Discrepancy` column is i
 
 ### No.3 Account paths not found
 
-The default paths in `config.py` point to a specific user profile and network share. Open `config.py` and update `NO3_DATABASE_PATH`, `NO3_TEMPLATE_PATH`, `NO3_TRACKER_DIR`, and `NO3_OUTPUT_BASE` to the correct locations for your environment.
+Without a `local_settings.json`, the No.3 paths default to folders under `BASE_PATH`. Set `no3_database_path`, `no3_template_path`, `no3_tracker_dir` and `no3_output_base` in `local_settings.json` to the correct locations for your environment.
 
 ### `.xls` files not loading
 

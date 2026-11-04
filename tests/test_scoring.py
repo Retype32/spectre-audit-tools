@@ -9,8 +9,13 @@ Run with:
     python -m unittest tests.test_scoring
 """
 import unittest
+from unittest import mock
 
+import scoring
 from scoring import grade as _grade, shift_hours as _shift_hours, score_one_session
+
+# Fictional operator IDs used in place of the real ones from local_settings.json
+_FAKE_TEN_HOUR_IDS = frozenset({"10001", "10002"})
 
 
 # =============================================================================
@@ -49,13 +54,18 @@ class TestGradeBoundaries(unittest.TestCase):
 
 
 class TestShiftHours(unittest.TestCase):
-    """Special operator IDs must map to 10-hour shifts; everyone else is 8."""
+    """Configured operator IDs must map to 10-hour shifts; everyone else is 8."""
 
-    def test_operator_41015_is_10h(self):
-        self.assertEqual(_shift_hours("41015"), 10)
+    def setUp(self):
+        patcher = mock.patch.object(scoring, "_TEN_HOUR_OP_IDS", _FAKE_TEN_HOUR_IDS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_operator_9876_is_10h(self):
-        self.assertEqual(_shift_hours("9876"), 10)
+    def test_first_configured_operator_is_10h(self):
+        self.assertEqual(_shift_hours("10001"), 10)
+
+    def test_second_configured_operator_is_10h(self):
+        self.assertEqual(_shift_hours("10002"), 10)
 
     def test_standard_operator_is_8h(self):
         self.assertEqual(_shift_hours("12345"), 8)
@@ -64,7 +74,7 @@ class TestShiftHours(unittest.TestCase):
         self.assertEqual(_shift_hours(""), 8)
 
     def test_op_id_with_whitespace_is_10h(self):
-        self.assertEqual(_shift_hours(" 41015 "), 10)
+        self.assertEqual(_shift_hours(" 10001 "), 10)
 
 
 class TestScoreCalculation(unittest.TestCase):
@@ -111,10 +121,11 @@ class TestScoreCalculation(unittest.TestCase):
         score = self._score(0, 0, mistakes=[m, m, m, m, m, m, m, m])
         self.assertEqual(score, 0.0)
 
+    @mock.patch.object(scoring, "_TEN_HOUR_OP_IDS", _FAKE_TEN_HOUR_IDS)
     def test_10h_shift_operator_gets_perfect_score(self):
-        # op 41015 → 10h shift; 250 slips = 25/hr = target → thr=25
+        # op 10001 → 10h shift; 250 slips = 25/hr = target → thr=25
         # val=20, slip=15 (250 vs target 200, capped), acc=20, clean=10 → 90
-        score = self._score(250, 50_000, op_id="41015")
+        score = self._score(250, 50_000, op_id="10001")
         self.assertEqual(score, 90.0)
 
     def test_throughput_capped_at_1_2x_target(self):

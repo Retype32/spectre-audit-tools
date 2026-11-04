@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QInputDialog, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget
 )
 
-from config import DATABASE_FILE, DISCREPANCY_DB_PATH, SLIP_HISTORY_DB
+from config import (
+    ADMIN_PASSWORD, DATABASE_FILE, DISCREPANCY_DB_PATH, LOCAL_SETTINGS_FILE, SLIP_HISTORY_DB,
+)
 
 from utils import msg_err, msg_info, msg_warn, msg_yes
 
@@ -147,10 +149,15 @@ class CashierDbPage(QWidget):
             logging.exception("Unhandled exception"); msg_err(self, "Error", str(e))
 
     def verify_password(self, action):
+        if not ADMIN_PASSWORD:
+            msg_err(self, "Locked",
+                    "No admin password is configured.\n\n"
+                    f"Add \"admin_password\" to:\n{LOCAL_SETTINGS_FILE}")
+            return False
         pw, ok = QInputDialog.getText(self, "Password Required",
             f"Enter password to {action}:", QLineEdit.Password)
         if not ok: return False
-        if pw == "7861": return True
+        if pw == ADMIN_PASSWORD: return True
         msg_err(self, "Denied", "Incorrect password"); return False
 
     def import_cashiers_csv(self):

@@ -21,7 +21,10 @@ from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
 )
 
-from config import DUBLIN_DSC_AMOUNTS, JOLLYES_BASE, NON_VMS_BASE_FOLDER, NON_VMS_CONFIG, XLRD_AVAILABLE
+from config import (
+    DBC_FOLDER, DUBLIN_DSC_AMOUNTS, JOLLYES_BASE, NON_VMS_BASE_FOLDER, NON_VMS_CONFIG,
+    NON_VMS_TEXT_PREFIX, XLRD_AVAILABLE,
+)
 
 from utils import msg_err, msg_info, msg_warn, msg_yes, open_file_in_default_app
 
@@ -29,6 +32,12 @@ from widgets import Card, DataTable, FieldLabel, StatusPill
 
 
 
+
+
+def _summary_text(location, tickets, date):
+    """One clipboard line per report, prefixed by NON_VMS_TEXT_PREFIX if set."""
+    parts = (NON_VMS_TEXT_PREFIX, location, f"({tickets})", date)
+    return " ".join(p for p in parts if p)
 
 
 class NonVmsPage(QWidget):
@@ -78,7 +87,7 @@ class NonVmsPage(QWidget):
         # DBC row
         dbc_row = QHBoxLayout(); dbc_row.setSpacing(8)
         dbc_row.addWidget(FieldLabel("DBC Folder"))
-        self.dbc_folder = QLineEdit(); self.dbc_folder.setText(r"I:\DBC's"); self.dbc_folder.setMinimumWidth(280)
+        self.dbc_folder = QLineEdit(); self.dbc_folder.setText(DBC_FOLDER); self.dbc_folder.setMinimumWidth(280)
         dbc_row.addWidget(self.dbc_folder)
         dbc_row.addWidget(FieldLabel("Template"))
         self.dbc_template = QLineEdit(); self.dbc_template.setText("Brinks Mini Ledger Master Version.xlsx")
@@ -189,7 +198,7 @@ class NonVmsPage(QWidget):
                             "location": dloc, "tickets": tc, "date": fdate,
                             "amounts": [dens.get(d, 0) for d in ["500","200","100","50","20","10","5"]],
                             "coins": dens.get("Coins", ""),
-                            "text": f"Magda 46200 (H7) {dloc} ({tc}) {fdate}",
+                            "text": _summary_text(dloc, tc, fdate),
                         }
                         self.app.nonvms_results.append(res)
                         self.results_table.add_row({
@@ -239,7 +248,7 @@ class NonVmsPage(QWidget):
                         res = {"location": "Jollyes", "tickets": tc, "date": fdate,
                                "amounts": [dens[d] for d in ["500","200","100","50","20","10","5"]],
                                "coins": coins,
-                               "text": f"Magda 46200 (H7) Jollyes ({tc}) {fdate}"}
+                               "text": _summary_text("Jollyes", tc, fdate)}
                         self.app.nonvms_results.append(res)
                         self.results_table.add_row({
                             "Location": "Jollyes", "Tickets": tc, "Date": fdate,

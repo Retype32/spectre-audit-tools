@@ -5,9 +5,53 @@ Edit this file to change folder paths, switch between TEST and production
 mode, or update SL79 No.3 paths. No business logic lives here.
 """
 import os
+import sys
+import json
 import datetime
 import logging
 from pathlib import Path
+
+# =============================================================================
+# LOCAL SETTINGS — site-specific values that must never be committed
+# =============================================================================
+# Real paths, staff names/IDs and the admin password live in
+# local_settings.json (git-ignored), next to config.py — or next to
+# Spectre.exe when running a PyInstaller build.
+# See local_settings.example.json for the available keys.
+
+def _local_settings_path():
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "local_settings.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_settings.json")
+
+
+LOCAL_SETTINGS_FILE = _local_settings_path()
+_LOCAL_SETTINGS_ERROR = None  # logged by setup_logging(); logging isn't ready at import
+
+
+def _load_local_settings():
+    global _LOCAL_SETTINGS_ERROR
+    try:
+        with open(LOCAL_SETTINGS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("top level must be a JSON object")
+        return data
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        _LOCAL_SETTINGS_ERROR = f"Could not read {LOCAL_SETTINGS_FILE}: {e}"
+        return {}
+
+
+_LOCAL = _load_local_settings()
+
+
+def _setting(key, default):
+    """Return a value from local_settings.json, or `default` if missing/empty."""
+    value = _LOCAL.get(key)
+    return default if value in (None, "") else value
+
 
 # =============================================================================
 # APP CONFIG (ported verbatim from v1.6)
@@ -20,7 +64,7 @@ if VERSION_MODE == "TEST":
     DESKTOP = os.path.join(os.environ.get('USERPROFILE', os.path.expanduser('~')), 'Desktop')
     BASE_PATH = os.path.join(DESKTOP, "Audit_System_Files")
 else:
-    BASE_PATH = os.path.normpath(r"W:\Work\Path\To\Files\Python")
+    BASE_PATH = os.path.normpath(_setting("prod_base_path", r"W:\Work\Path\To\Files\Python"))
 
 REQUIRED_FOLDERS = ["Cashiers Database", "Discrepancies Database",
                     "Slip Audits", "Integrity Reports", "logs"]
@@ -69,15 +113,27 @@ NON_VMS_CONFIG = {
     "Sligo":    {"tickets": ("C", 7, 30),  "amounts": {"500": 0, "200": 0, "100": "I9",  "50": "I10", "20": "I11", "10": "I12", "5": "I13", "Coins": "I15"}},
 }
 DUBLIN_DSC_AMOUNTS = {"500": 0, "200": 0, "100": 0, "50": "I9", "20": "I10", "10": "I11", "5": "I12"}
-NON_VMS_BASE_FOLDER = r"I:\Brinks\NON VMS\Irish Rail TVM's"
-JOLLYES_BASE = r"I:\Brinks\NON VMS\Jollyes"
+NON_VMS_BASE_FOLDER = _setting("non_vms_base_folder", os.path.join(BASE_PATH, "NON VMS", "Irish Rail TVM's"))
+JOLLYES_BASE        = _setting("jollyes_base_folder", os.path.join(BASE_PATH, "NON VMS", "Jollyes"))
+DBC_FOLDER          = _setting("dbc_folder", os.path.join(BASE_PATH, "DBC's"))
+# Text placed before each NON-VMS summary line copied to the clipboard
+# (e.g. the name/ID of the person the summary is sent to). Empty by default.
+NON_VMS_TEXT_PREFIX = str(_setting("non_vms_text_prefix", ""))
 
 # SL79 No.3 paths
-NO3_DATABASE_PATH = Path(r"C:\Users\OTsiampas\Desktop\Files\Python\No. 3 Database\No. 3 Database.xlsx")
-NO3_TEMPLATE_PATH = Path(r"C:\Users\OTsiampas\Desktop\Files\Python\No. 3 Database\SL Template.xlsx")
-NO3_TRACKER_DIR   = Path(r"C:\Users\OTsiampas\Desktop\Files\Python\No. 3 Database")
-NO3_OUTPUT_BASE   = Path(r"P:\DMS\11. SL79 no 3 account\SL79 forms")
+_NO3_DIR          = os.path.join(BASE_PATH, "No. 3 Database")
+NO3_DATABASE_PATH = Path(_setting("no3_database_path", os.path.join(_NO3_DIR, "No. 3 Database.xlsx")))
+NO3_TEMPLATE_PATH = Path(_setting("no3_template_path", os.path.join(_NO3_DIR, "SL Template.xlsx")))
+NO3_TRACKER_DIR   = Path(_setting("no3_tracker_dir", _NO3_DIR))
+NO3_OUTPUT_BASE   = Path(_setting("no3_output_base", os.path.join(BASE_PATH, "SL79 forms")))
 NO3_ALLOWED_YEARS = [str(y) for y in range(2026, 2031)]
+
+# Operators who work 10-hour shifts (everyone else is scored on 8 hours)
+TEN_HOUR_OP_IDS = frozenset(str(x).strip() for x in _setting("ten_hour_operator_ids", []))
+
+# Password for the Cashier Database "danger zone" delete buttons.
+# If not set, those buttons stay locked.
+ADMIN_PASSWORD = str(_setting("admin_password", ""))
 
 
 # =============================================================================
@@ -96,6 +152,10 @@ def setup_logging():
     )
     logging.info("=" * 60)
     logging.info(f"{APP_VERSION} starting (mode={VERSION_MODE})")
+    if _LOCAL_SETTINGS_ERROR:
+        logging.warning(_LOCAL_SETTINGS_ERROR)
+    elif not _LOCAL:
+        logging.info(f"No local settings found at {LOCAL_SETTINGS_FILE} — using defaults")
 
 
 # =============================================================================
