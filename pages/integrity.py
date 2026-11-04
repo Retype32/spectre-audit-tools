@@ -591,10 +591,6 @@ class IntegrityPage(QWidget):
                     existing = existing[existing["Date"] != str(row_date)]
                     combined = pd.concat([existing, new_df.astype(str)], ignore_index=True)
                 except Exception:
-                    logging.exception(
-                        "_save_performance_history: could not read existing history "
-                        "— new data appended without merging"
-                    )
                     combined = new_df.astype(str)
             else:
                 combined = new_df.astype(str)
@@ -734,11 +730,6 @@ class IntegrityPage(QWidget):
             if search_page:
                 cn = sorted(df['Cashier Name'].unique().tolist())
                 search_page.refresh_cashier_list(cn)
-
-            # Reset cashier performance scope to "This Report" for the new report
-            perf_page = self.app.pages.get('perf')
-            if perf_page:
-                perf_page._ever_shown = False
 
             self.app.top_status.set(
                 f"✓ {len(df):,} transactions | HR {npd} | Sus {nsp} | Shared {sw_count}", "success")

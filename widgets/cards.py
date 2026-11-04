@@ -52,14 +52,14 @@ class StatCard(QFrame):
         self.setObjectName("cardElevated")
         self._color = color or Theme.ACCENT
         self._clickable = clickable
-        self.setMinimumHeight(96)
+        self.setMinimumHeight(90)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if clickable:
             self.setCursor(Qt.PointingHandCursor)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(5)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(4)
 
         top = QHBoxLayout(); top.setSpacing(8)
         if icon:
@@ -76,8 +76,8 @@ class StatCard(QFrame):
     def _refresh_value_style(self):
         fm = _theme.FONT_MONO()
         self.value_lbl.setStyleSheet(
-            f"color: {self._color}; font-size: 28px; font-weight: 700; "
-            f"font-family: '{fm}', Consolas, monospace; letter-spacing: -0.8px;"
+            f"color: {self._color}; font-size: 26px; font-weight: 700; "
+            f"font-family: '{fm}', Consolas, monospace; letter-spacing: -0.5px;"
         )
 
     def set_value(self, v):
@@ -97,13 +97,13 @@ class FieldLabel(QLabel):
 
 
 class StatusPill(QLabel):
-    """Compact coloured status badge with background tint."""
+    """Compact coloured status text."""
     LEVELS = {
-        "info":    (Theme.INFO,    "rgba(91,138,245,0.12)"),
-        "success": (Theme.OK,     "rgba(54,201,138,0.12)"),
-        "warning": (Theme.WARN,   "rgba(240,160,48,0.12)"),
-        "danger":  (Theme.DANGER, "rgba(239,79,68,0.12)"),
-        "muted":   (Theme.TXT_3,  "transparent"),
+        "info":    Theme.INFO,
+        "success": Theme.OK,
+        "warning": Theme.WARN,
+        "danger":  Theme.DANGER,
+        "muted":   Theme.TXT_3,
     }
 
     def __init__(self, text="", level="info", parent=None):
@@ -111,10 +111,8 @@ class StatusPill(QLabel):
         self.set(text, level)
 
     def set(self, text, level="info"):
-        color, bg = self.LEVELS.get(level, (Theme.TXT_2, "transparent"))
+        c = self.LEVELS.get(level, Theme.TXT_2)
         self.setStyleSheet(
-            f"color: {color}; background: {bg};"
-            f"font-size: 11px; font-weight: 600; letter-spacing: 0.5px;"
-            f"padding: 2px 8px; border-radius: 5px;"
+            f"color: {c}; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;"
         )
         self.setText(text)

@@ -1315,8 +1315,5 @@ class CashierPerformancePage(QWidget):
             self._sort_frame.setVisible(False)
             self._perf_score_card.setVisible(False)
         else:
-            # Reset scope to "This Report" only on first visit; preserve selection on return
-            if not getattr(self, "_ever_shown", False):
-                self._scope.setCurrentIndex(0)
-                self._ever_shown = True
+            self._scope.setCurrentIndex(0)
             self.compute()

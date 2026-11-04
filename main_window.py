@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         self._resize_start_pos = None
         # Thickness of the invisible hit-zone around the window edges that
         # the user can grab to resize.
-        self._resize_margin = 8
+        self._resize_margin = 6
 
         # Shared state used across pages (replaces v1.6 self.* attrs)
         self.active_df = None
@@ -154,25 +154,17 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         side = QFrame()
         side.setObjectName("sidebar")
-        side.setFixedWidth(224)
+        side.setFixedWidth(220)
 
         lay = QVBoxLayout(side)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
         # ── Logo (pinned — never scrolls) ─────────────────────────────
-        logo = QLabel("◈  SPECTRE"); logo.setObjectName("sidebarLogo")
+        logo = QLabel("⬡  SPECTRE"); logo.setObjectName("sidebarLogo")
         lay.addWidget(logo)
         ver = QLabel(f"v2.0  ·  {VERSION_MODE}"); ver.setObjectName("sidebarVersion")
         lay.addWidget(ver)
-
-        # Accent hairline under the logo block
-        logo_div = QFrame(); logo_div.setFixedHeight(1)
-        logo_div.setStyleSheet(
-            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            f"stop:0 {Theme.ACCENT}, stop:0.5 {Theme.BORDER}, stop:1 {Theme.BORDER_S});"
-        )
-        lay.addWidget(logo_div)
 
         self.nav_buttons = []   # (btn, label) — only leaf nav items
 
@@ -243,7 +235,7 @@ class MainWindow(QMainWindow):
         self._db_btn.setObjectName("navBtn")
         self._db_btn.setCheckable(True)
         self._db_btn.setCursor(Qt.PointingHandCursor)
-        self._db_btn.setFixedHeight(36)
+        self._db_btn.setFixedHeight(34)
         self._db_btn.clicked.connect(self._open_database)
         lay.addWidget(self._db_btn)
 
@@ -255,7 +247,7 @@ class MainWindow(QMainWindow):
         self._settings_btn.setObjectName("navBtn")
         self._settings_btn.setCheckable(True)
         self._settings_btn.setCursor(Qt.PointingHandCursor)
-        self._settings_btn.setFixedHeight(36)
+        self._settings_btn.setFixedHeight(34)
         self._settings_btn.clicked.connect(self._open_settings)
         lay.addWidget(self._settings_btn)
 
@@ -263,7 +255,7 @@ class MainWindow(QMainWindow):
         self._debug_btn.setObjectName("navBtn")
         self._debug_btn.setCheckable(True)
         self._debug_btn.setCursor(Qt.PointingHandCursor)
-        self._debug_btn.setFixedHeight(36)
+        self._debug_btn.setFixedHeight(34)
         self._debug_btn.clicked.connect(self._open_debug)
         lay.addWidget(self._debug_btn)
 
@@ -277,21 +269,23 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet(f"background:{Theme.BORDER_S};")
         parent_lay.addWidget(sep)
 
-        # Collapsible group header — minimal label style matching modern sidebars
+        # Header button — styled as a prominent section header so it reads
+        # clearly above the nav items nested inside it.
         arrow = "▾" if expanded else "▸"
-        header = QPushButton(f" {arrow}  {label}")
+        header = QPushButton(f"  {arrow}  {label}")
         header.setStyleSheet(
             f"QPushButton{{"
-            f"  background:transparent;"
-            f"  color:{Theme.TXT_3};"
+            f"  background:{Theme.BG};"
+            f"  color:{Theme.TXT_2};"
             f"  border:none;"
-            f"  text-align:left;"
-            f"  padding:12px 14px 6px 16px;"
-            f"  font-size:9.5px; font-weight:700; letter-spacing:2.5px;"
+            f"  border-left:2px solid {Theme.BORDER};"
+            f"  text-align:left; padding:11px 14px 7px 12px;"
+            f"  font-size:10.5px; font-weight:800; letter-spacing:2.5px;"
             f"}}"
             f"QPushButton:hover{{"
-            f"  color:{Theme.TXT_2};"
-            f"  background:transparent;"
+            f"  color:{Theme.TXT};"
+            f"  border-left:2px solid {Theme.ACCENT};"
+            f"  background:{Theme.BG};"
             f"}}"
         )
         header.setCheckable(False)
@@ -372,7 +366,7 @@ class MainWindow(QMainWindow):
         btn.setObjectName("navBtn")
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
-        btn.setMinimumHeight(36)
+        btn.setMinimumHeight(34)
 
         inner = QHBoxLayout(btn)
         inner.setContentsMargins(10, 0, 12, 0)
@@ -417,18 +411,17 @@ class MainWindow(QMainWindow):
         self._apply_nav_style(btn, False)
 
     def _apply_nav_style(self, btn, active):
-        color  = Theme.ACCENT_H if active else Theme.TXT_3
+        color  = Theme.TXT if active else Theme.TXT_3
         weight = "font-weight:600;" if active else "font-weight:400;"
-        lbl_style = (
-            f"color:{color};background:transparent;{weight}"
-            f"font-size:13px;letter-spacing:0.1px;"
-        )
+        lbl_style = f"color:{color};background:transparent;{weight}font-size:13px;"
 
         if hasattr(btn, '_icon_lbl'):
             eff = getattr(btn, '_icon_effect', None)
             if eff is not None:
-                eff.setOpacity(1.0 if active else 0.38)
+                # PNG icon: use opacity to signal active vs inactive
+                eff.setOpacity(1.0 if active else 0.40)
             else:
+                # Text glyph: use colour
                 btn._icon_lbl.setStyleSheet(lbl_style)
 
         if hasattr(btn, '_text_lbl'):
@@ -501,12 +494,12 @@ class MainWindow(QMainWindow):
             f"QFrame#topBar {{ background: {Theme.BG}; "
             f"border-bottom: 1px solid {Theme.BORDER_S}; }}"
         )
-        bar.setFixedHeight(58)
-        l = QHBoxLayout(bar); l.setContentsMargins(28, 0, 20, 0); l.setSpacing(10)
+        bar.setFixedHeight(54)
+        l = QHBoxLayout(bar); l.setContentsMargins(24, 0, 20, 0); l.setSpacing(8)
 
         self.page_title = QLabel("Integrity Check")
         self.page_title.setStyleSheet(
-            f"color:{Theme.TXT}; font-size:17px; font-weight:700; letter-spacing:-0.2px;"
+            f"color:{Theme.TXT}; font-size:16px; font-weight:600; letter-spacing:0.2px;"
         )
         l.addWidget(self.page_title)
         l.addStretch()
@@ -525,53 +518,44 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _build_title_bar(self):
         bar = TitleBar(self)
-        bar.setFixedHeight(36)
+        bar.setFixedHeight(30)
         bar.setStyleSheet(
             f"TitleBar {{ background: {Theme.SURFACE}; "
             f"border-bottom: 1px solid {Theme.BORDER_S}; }}"
         )
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(18, 0, 4, 0); lay.setSpacing(6)
+        lay.setContentsMargins(16, 0, 4, 0); lay.setSpacing(8)
 
         # Left: app title
         title = QLabel("SPECTRE  ·  AUDIT INTELLIGENCE")
         title.setStyleSheet(
-            f"color:{Theme.TXT_3}; font-size:9px; font-weight:700; letter-spacing:2.5px;"
+            f"color:{Theme.TXT_3}; font-size:9.5px; font-weight:700; letter-spacing:1.8px;"
         )
         lay.addWidget(title)
         lay.addStretch(1)
 
-        # Right: three window-control buttons — traffic-light hover colours
-        _base = (
-            f"QToolButton {{ background:transparent; border:none; border-radius:0; "
-            f"min-width:46px; min-height:36px; font-size:12px; }}"
-        )
-        min_style = (
-            _base
-            + f"QToolButton {{ color:{Theme.TXT_3}; }}"
-            + f"QToolButton:hover {{ background:rgba(240,160,48,0.15); color:#f0a030; }}"
-        )
-        max_style = (
-            _base
-            + f"QToolButton {{ color:{Theme.TXT_3}; }}"
-            + f"QToolButton:hover {{ background:rgba(54,201,138,0.15); color:#36c98a; }}"
+        # Right: three window-control buttons
+        btn_style = (
+            f"QToolButton {{ background:transparent; color:{Theme.TXT_2}; border:none; "
+            f"min-width:42px; min-height:32px; font-size:13px; }}"
+            f"QToolButton:hover {{ background:{Theme.HOVER}; color:{Theme.TXT}; }}"
         )
         close_style = (
-            _base
-            + f"QToolButton {{ color:{Theme.TXT_3}; }}"
-            + f"QToolButton:hover {{ background:rgba(239,79,68,0.18); color:#ef4f44; }}"
+            f"QToolButton {{ background:transparent; color:{Theme.TXT_2}; border:none; "
+            f"min-width:42px; min-height:32px; font-size:13px; }}"
+            f"QToolButton:hover {{ background:{Theme.DANGER}; color:white; }}"
         )
 
         self._btn_min = QToolButton(); self._btn_min.setText("─")
         self._btn_min.setToolTip("Minimize")
         self._btn_min.setCursor(Qt.PointingHandCursor)
-        self._btn_min.setStyleSheet(min_style)
+        self._btn_min.setStyleSheet(btn_style)
         self._btn_min.clicked.connect(self.showMinimized)
 
         self._btn_max = QToolButton(); self._btn_max.setText("☐")
         self._btn_max.setToolTip("Maximize")
         self._btn_max.setCursor(Qt.PointingHandCursor)
-        self._btn_max.setStyleSheet(max_style)
+        self._btn_max.setStyleSheet(btn_style)
         self._btn_max.clicked.connect(self._toggle_max_restore)
 
         self._btn_close = QToolButton(); self._btn_close.setText("✕")
