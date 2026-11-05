@@ -27,11 +27,8 @@ Recency weighting (3M / 6M / 12M views):
   Middle third               → 30 % weight
   Oldest third               → 20 % weight
 """
-import logging
-import os
 import datetime
-
-import pandas as pd
+import logging
 
 from PySide6.QtCore import Qt, QDate
 from PySide6.QtWidgets import (
@@ -41,21 +38,14 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
-from config import (
-    AMOUNT, OPERATOR, PERFORMANCE_HISTORY_DB,
-    MISTAKES_DB, MISTAKE_TYPES,
-)
+from config import MISTAKE_TYPES
 from theme import Theme
 
+from engine.performance import compute_performance, log_mistake, sort_rows, team_summary
 from scoring import (
-    grade as _grade, shift_hours as _shift_hours,
-    compute_targets as _compute_targets, score_one_session as _score_one_session,
-    consistency_score as _consistency_score,
-    recency_weighted_avg as _recency_weighted_avg,
     penalty_summary as _penalty_summary,
-    all_mistakes as _all_mistakes, mistakes_by_cashier as _mistakes_by_cashier,
-    _TARGET_PER_HOUR, _W_THROUGHPUT, _W_VALUE, _W_SLIPS,
-    _W_ACCURACY, _W_CONSISTENCY, _W_CLEAN_RATIO, _RECENCY, SCOPES,
+    _W_THROUGHPUT, _W_VALUE, _W_SLIPS,
+    _W_ACCURACY, _W_CONSISTENCY, _W_CLEAN_RATIO, SCOPES,
 )
 
 _SCOPES = SCOPES
@@ -194,26 +184,9 @@ class LogMistakeDialog(QDialog):
         type_key = self._type_cb.currentData()
         if not type_key:
             return
-        points = MISTAKE_TYPES[type_key]["points"]
         notes  = self._notes.text().strip()
-
-        new_row = {
-            "date":            date_val,
-            "cashier":         cashier,
-            "operator_id":     "",
-            "type":            type_key,
-            "severity_points": points,
-            "notes":           notes,
-            "logged_at":       datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        }
         try:
-            if os.path.exists(MISTAKES_DB):
-                mdf = pd.read_csv(MISTAKES_DB, dtype=str)
-            else:
-                mdf = pd.DataFrame(columns=list(new_row.keys()))
-            mdf = pd.concat([mdf, pd.DataFrame([new_row])], ignore_index=True)
-            os.makedirs(os.path.dirname(MISTAKES_DB), exist_ok=True)
-            mdf.to_csv(MISTAKES_DB, index=False)
+            log_mistake(date_val, cashier, type_key, notes)
             self.accept()
         except Exception as e:
             logging.exception("LogMistakeDialog._save")
@@ -791,273 +764,14 @@ class CashierPerformancePage(QWidget):
             return
 
         try:
-            scope        = self._scope.currentText()
-            session_only = (scope == "This Report")
-            today        = datetime.date.today()
-            cutoff       = None
-
-            if scope == "Today":
-                cutoff = today
-            elif scope == "This Week":
-                cutoff = today - datetime.timedelta(days=7)
-            elif scope == "This Month":
-                cutoff = datetime.date(today.year, today.month, 1)
-            elif scope == "3 Months":
-                cutoff = today - datetime.timedelta(days=90)
-            elif scope == "6 Months":
-                cutoff = today - datetime.timedelta(days=180)
-            elif scope == "12 Months":
-                cutoff = today - datetime.timedelta(days=365)
-
-            if "Cashier Name" not in df.columns:
+            scope  = self._scope.currentText()
+            result = compute_performance(
+                df, scope, active_date=getattr(self.app, "_active_report_date", None)
+            )
+            if result is None:          # report has no "Cashier Name" column
                 return
-
-            active_date = getattr(self.app, "_active_report_date", None)
-
-            # ── Session data ──────────────────────────────────────────
-            session_txn:    dict = {}
-            session_val:    dict = {}
-            cashier_op_ids: dict = {}
-
-            for name, grp in df.groupby("Cashier Name"):
-                n = str(name)
-                session_txn[n] = len(grp)
-                session_val[n] = float(grp[AMOUNT].sum()) if AMOUNT in df.columns else 0.0
-                if OPERATOR in grp.columns:
-                    op = grp[OPERATOR].mode()
-                    cashier_op_ids[n] = str(op.iloc[0]).strip() if not op.empty else ""
-
-            all_cashiers = set(session_txn.keys())
-
-            # ── Historical data ───────────────────────────────────────
-            # hist_daily: {cashier: [(date_obj_or_None, slips, value), ...]}
-            hist_daily: dict = {}
-            hist_df    = None
-
-            if not session_only:
-                try:
-                    if os.path.exists(PERFORMANCE_HISTORY_DB):
-                        hist_df = pd.read_csv(PERFORMANCE_HISTORY_DB, dtype=str)
-                        if "Name" in hist_df.columns and "System Count" in hist_df.columns:
-                            hist_df["System Count"] = pd.to_numeric(
-                                hist_df["System Count"], errors="coerce"
-                            ).fillna(0)
-                            has_val = "Total Value" in hist_df.columns
-                            if has_val:
-                                hist_df["Total Value"] = pd.to_numeric(
-                                    hist_df["Total Value"], errors="coerce"
-                                ).fillna(0)
-
-                            for _, row in hist_df.iterrows():
-                                n        = str(row.get("Name", "")).strip()
-                                date_str = str(row.get("Date", "")).strip()
-                                if not n:
-                                    continue
-                                if active_date and date_str == active_date:
-                                    continue  # already in session
-                                if cutoff is not None and date_str:
-                                    try:
-                                        rd = datetime.datetime.strptime(
-                                            date_str, "%d.%m.%Y"
-                                        ).date()
-                                        if rd < cutoff:
-                                            continue
-                                    except Exception:
-                                        continue  # unparseable date — exclude when cutoff active
-                                try:
-                                    d_obj = datetime.datetime.strptime(
-                                        date_str, "%d.%m.%Y"
-                                    ).date()
-                                except Exception:
-                                    d_obj = None
-
-                                # Backfill op_id for cashiers not in the current session
-                                if n not in cashier_op_ids:
-                                    op = str(row.get("Operator_Id", "")).strip()
-                                    if op and op.lower() not in ("nan", "none", ""):
-                                        cashier_op_ids[n] = op
-
-                                slips = int(row.get("System Count", 0))
-                                value = float(row.get("Total Value", 0)) if has_val else 0.0
-                                all_cashiers.add(n)
-                                hist_daily.setdefault(n, []).append((d_obj, slips, value))
-                except Exception:
-                    logging.exception("compute: loading history")
-
-            # ── Targets from full history (unfiltered) ────────────────
-            # Load the full history DB for target derivation regardless of scope
-            full_hist_df = hist_df
-            if hist_df is None and os.path.exists(PERFORMANCE_HISTORY_DB):
-                try:
-                    full_hist_df = pd.read_csv(PERFORMANCE_HISTORY_DB, dtype=str)
-                except Exception:
-                    pass
-            target_slips, target_value = _compute_targets(full_hist_df)
-
-            # ── Mistakes ──────────────────────────────────────────────
-            mistakes_by_c = _mistakes_by_cashier(cutoff)
-
-            # Group active-session mistakes by cashier (filter to report date)
-            session_mistakes: dict = {}
-            if active_date:
-                for cashier, mlist in mistakes_by_c.items():
-                    day_m = [m for m in mlist if m["date"] == active_date]
-                    if day_m:
-                        session_mistakes[cashier] = day_m
-
-            # ── Build result rows ─────────────────────────────────────
-            raw_rows = []
-
-            for name in sorted(all_cashiers):
-                op_id = cashier_op_ids.get(name, "")
-
-                if session_only:
-                    # ── Single session ────────────────────────────────
-                    slips    = session_txn.get(name, 0)
-                    value    = session_val.get(name, 0.0)
-                    mistakes = session_mistakes.get(name, [])
-
-                    sc = _score_one_session(
-                        slips, value, op_id, mistakes, target_slips, target_value
-                    )
-                    sc["consistency"] = None  # explicitly N/A
-
-                    raw_rows.append({
-                        "name":          name,
-                        "txn":           slips,
-                        "value":         value,
-                        "avg_val":       value / slips if slips else 0.0,
-                        "slips_per_hr":  sc["slips_per_hr"],
-                        "throughput":    sc["slips_per_hr"] / _TARGET_PER_HOUR,
-                        "accuracy":      sc["acc_score"],
-                        "consistency":   None,
-                        "score":         int(round(sc["total"])),
-                        "grade":         _grade(sc["total"]),
-                        "breakdown":     sc,
-                        "mistakes":      len(mistakes),
-                        "penalty":       sc["penalty"],
-                        "mistakes_list": mistakes,
-                        "op_id":         op_id,
-                        "sessions":      1,
-                    })
-
-                else:
-                    # ── Multi-day ─────────────────────────────────────
-                    daily_entries = []
-
-                    # Add current session as one entry
-                    if name in session_txn:
-                        if active_date:
-                            try:
-                                sess_date = datetime.datetime.strptime(
-                                    active_date, "%d.%m.%Y"
-                                ).date()
-                            except Exception:
-                                sess_date = today
-                        else:
-                            sess_date = today
-                        daily_entries.append((
-                            sess_date,
-                            session_txn[name],
-                            session_val.get(name, 0.0),
-                        ))
-
-                    for entry in hist_daily.get(name, []):
-                        daily_entries.append(entry)
-
-                    if not daily_entries:
-                        continue
-
-                    # Group this cashier's mistakes by date string
-                    cashier_mistakes = mistakes_by_c.get(name, [])
-                    mistakes_by_date: dict = {}
-                    for m in cashier_mistakes:
-                        mistakes_by_date.setdefault(m["date"], []).append(m)
-
-                    # Compute a base score for every working day
-                    daily_scores = []
-                    dated_daily  = []   # (date, base_score) for recency weighting
-                    total_slips  = 0
-                    total_value  = 0.0
-                    all_mistakes_flat = list(cashier_mistakes)  # full period
-
-                    for entry_date, slips, value in daily_entries:
-                        date_str  = entry_date.strftime("%d.%m.%Y") if entry_date else ""
-                        day_mist  = mistakes_by_date.get(date_str, [])
-                        sc_day    = _score_one_session(
-                            slips, value, op_id, day_mist, target_slips, target_value
-                        )
-                        daily_scores.append(sc_day["total"])
-                        if entry_date:
-                            dated_daily.append((entry_date, sc_day["total"]))
-                        total_slips += slips
-                        total_value += value
-
-                    sessions = len(daily_entries)
-
-                    # Consistency from spread of daily base scores
-                    cons = _consistency_score(daily_scores)
-
-                    # Period base score (recency-weighted for 3M/6M/12M)
-                    if scope in _RECENCY and dated_daily:
-                        period_base = _recency_weighted_avg(dated_daily, scope, today)
-                    else:
-                        period_base = (
-                            sum(daily_scores) / len(daily_scores)
-                            if daily_scores else 0.0
-                        )
-
-                    final_score = max(0.0, min(100.0, period_base + cons))
-
-                    total_penalty = sum(m["points"] for m in all_mistakes_flat)
-
-                    # Build period-level display breakdown (correct rates, not inflated)
-                    hpd     = _shift_hours(op_id)
-                    avg_spd = total_slips / sessions
-                    avg_vpd = total_value / sessions
-                    avg_sph = avg_spd / hpd if hpd else 0.0
-                    thr_r   = avg_sph / _TARGET_PER_HOUR
-                    per_err = len(all_mistakes_flat) / total_slips if total_slips else 0.0
-
-                    d_thr   = round(min(float(_W_THROUGHPUT), min(thr_r, 1.2) * _W_THROUGHPUT), 1)
-                    d_val   = round(min(float(_W_VALUE), (avg_vpd / target_value) * _W_VALUE if target_value else 0.0), 1)
-                    d_slip  = round(min(float(_W_SLIPS), (avg_spd / target_slips) * _W_SLIPS if target_slips else 0.0), 1)
-                    d_acc   = round(max(0.0, (1.0 - min(per_err, 1.0)) * _W_ACCURACY), 1)
-                    d_clean = round(max(0.0, (1.0 - min(per_err, 1.0)) * _W_CLEAN_RATIO), 1)
-
-                    sample_sc = {
-                        "thr_score":    d_thr,
-                        "val_score":    d_val,
-                        "slip_score":   d_slip,
-                        "acc_score":    d_acc,
-                        "clean_score":  d_clean,
-                        "consistency":  cons,
-                        "penalty":      total_penalty,
-                        "base":         round(d_thr + d_val + d_slip + d_acc + d_clean, 1),
-                        "total":        round(final_score, 1),
-                        "slips_per_hr": round(avg_sph, 2),
-                        "mistake_count": len(all_mistakes_flat),
-                    }
-
-                    raw_rows.append({
-                        "name":          name,
-                        "txn":           total_slips,
-                        "value":         total_value,
-                        "avg_val":       total_value / total_slips if total_slips else 0.0,
-                        "slips_per_hr":  sample_sc["slips_per_hr"],
-                        "throughput":    sample_sc["slips_per_hr"] / _TARGET_PER_HOUR,
-                        "accuracy":      sample_sc["acc_score"],
-                        "consistency":   cons,
-                        "score":         int(round(final_score)),
-                        "grade":         _grade(final_score),
-                        "breakdown":     sample_sc,
-                        "mistakes":      len(all_mistakes_flat),
-                        "penalty":       total_penalty,
-                        "mistakes_list": all_mistakes_flat,
-                        "op_id":         op_id,
-                        "sessions":      sessions,
-                        "period_base":   round(period_base, 1),
-                    })
+            raw_rows = result.rows
+            target_slips, target_value = result.target_slips, result.target_value
 
             if not raw_rows:
                 self._no_data.setVisible(True)
@@ -1070,20 +784,21 @@ class CashierPerformancePage(QWidget):
             self._last_data = raw_rows
 
             # ── Update summary pills ──────────────────────────────────
-            grades       = [r["grade"]   for r in raw_rows]
-            total_txn    = sum(r["txn"]   for r in raw_rows)
-            total_val    = sum(r["value"] for r in raw_rows)
-            avg_score    = sum(r["score"] for r in raw_rows) / len(raw_rows)
-            total_mist   = sum(r["mistakes"] for r in raw_rows)
-            total_pen    = sum(r["penalty"]  for r in raw_rows)
-            avg_rate     = sum(r["slips_per_hr"] for r in raw_rows) / len(raw_rows)
+            team         = team_summary(raw_rows)
+            grades       = [r["grade"] for r in raw_rows]
+            total_txn    = team["total_txn"]
+            total_val    = team["total_value"]
+            avg_score    = team["avg_score"]
+            total_mist   = team["total_mistakes"]
+            total_pen    = team["total_penalty"]
+            avg_rate     = team["avg_rate"]
 
             self._pills["cashiers"].setText(str(len(raw_rows)))
             self._pills["total_txn"].setText(f"{total_txn:,}")
             self._pills["total_val"].setText(f"€{total_val:,.0f}")
             self._pills["avg_rate"].setText(f"{avg_rate:.1f}/hr")
             self._pills["avg_score"].setText(
-                f"{avg_score:.0f} / {_grade(int(avg_score))}"
+                f"{avg_score:.0f} / {team['team_grade']}"
             )
             self._pills["grade_a"].setText(str(grades.count("A")))
 
@@ -1105,10 +820,10 @@ class CashierPerformancePage(QWidget):
             self._sort_frame.setVisible(True)
 
             # ── Team score circle ─────────────────────────────────────
-            team_score  = int(avg_score)
+            team_score  = team["team_score"]
             color       = (Theme.OK   if team_score >= 75 else
                            Theme.WARN if team_score >= 50 else Theme.DANGER)
-            grade_label = _grade(team_score)
+            grade_label = team["team_grade"]
             grade_desc  = (
                 "Outstanding team performance."                         if team_score >= 90 else
                 "Good performance with room for improvement."           if team_score >= 75 else
@@ -1151,21 +866,8 @@ class CashierPerformancePage(QWidget):
             self._results_card.setVisible(False)
             return
 
-        scope   = self._scope.currentText()
-        reverse = not self._sort_asc
-
-        if self._sort_col == "name":
-            sorted_r = sorted(
-                rows, key=lambda r: str(r.get("name", "")).lower(), reverse=reverse
-            )
-        elif self._sort_col == "accuracy":
-            sorted_r = sorted(rows, key=lambda r: r.get("accuracy") or 0, reverse=reverse)
-        elif self._sort_col == "consistency":
-            sorted_r = sorted(rows, key=lambda r: r.get("consistency") or 0, reverse=reverse)
-        elif self._sort_col == "mistakes":
-            sorted_r = sorted(rows, key=lambda r: r.get("mistakes", 0), reverse=reverse)
-        else:
-            sorted_r = sorted(rows, key=lambda r: r.get(self._sort_col, 0), reverse=reverse)
+        scope    = self._scope.currentText()
+        sorted_r = sort_rows(rows, self._sort_col, ascending=self._sort_asc)
 
         for i, r in enumerate(sorted_r):
             grade = r["grade"]

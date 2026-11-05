@@ -498,7 +498,7 @@ Common causes: missing PySide6 (`pip install PySide6`), Python version below 3.1
 
 | Folder / file | What's in it |
 |---------------|--------------|
-| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check). |
+| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period, team summary, ranking, logging mistakes). |
 | `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: cashier scoring, duplicate verdicts, shared helpers. |
 | `pages/`, `widgets/`, `main_window.py` | The PySide6 user interface. Pages call into `engine/` rather than doing the calculations themselves. |
 
