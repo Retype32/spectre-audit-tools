@@ -14,11 +14,10 @@ import unittest
 import pandas as pd
 
 from config import AMOUNT, OPERATOR
-from engine.detection import IntegrityResult
 from engine.performance import compute_performance
-from engine.targets import (BY_KEY, TARGETS, TargetError, clean_targets, compare,
-                            integrity_progress, load_targets, parse_value,
-                            performance_progress, read_targets_file, save_targets)
+from engine.targets import (BY_KEY, TARGETS, TargetError, clean_targets, compare, effective,
+                            load_targets, parse_value, performance_progress,
+                            read_targets_file, save_targets)
 
 TODAY = datetime.date(2026, 6, 20)
 ACTIVE = "20.06.2026"
@@ -36,8 +35,18 @@ class TestDefinitions(unittest.TestCase):
         self.assertEqual(len(BY_KEY), len(TARGETS))
         for t in TARGETS:
             self.assertIn(t.better, ("higher", "lower"))
+            self.assertIn(t.kind, ("target", "rule"))
         self.assertEqual({t.key for t in TARGETS if t.in_score},
-                         {"cashier_daily_slips", "cashier_daily_value", "slips_per_hour"})
+                         {"slips_per_hour", "max_carry_over_bags",
+                          "proc360_min_cash_per_slip", "proc360_max_slips"})
+
+    def test_defaults(self):
+        self.assertEqual(effective({}, "slips_per_hour"), 25)
+        self.assertEqual(effective({}, "max_carry_over_bags"), 0)
+        self.assertEqual(effective({}, "proc360_min_cash_per_slip"), 10_000)
+        self.assertEqual(effective({}, "proc360_max_slips"), 100)
+        self.assertIsNone(effective({}, "team_score"))
+        self.assertEqual(effective({"slips_per_hour": 22}, "slips_per_hour"), 22)
 
 
 class TestParsing(unittest.TestCase):
@@ -46,21 +55,21 @@ class TestParsing(unittest.TestCase):
             self.assertIsNone(parse_value(BY_KEY["team_score"], raw))
 
     def test_euro_and_thousands_separators(self):
-        self.assertEqual(parse_value(BY_KEY["team_daily_value"], "€52,500"), 52500.0)
-        self.assertEqual(parse_value(BY_KEY["max_error_rate"], "2.5%"), 2.5)
+        self.assertEqual(parse_value(BY_KEY["proc360_min_cash_per_slip"], "€12,500"), 12500.0)
+        self.assertEqual(parse_value(BY_KEY["slips_per_hour"], "22.5"), 22.5)
 
     def test_invalid_values(self):
         with self.assertRaises(ValueError):
             parse_value(BY_KEY["team_score"], "abc")
         with self.assertRaises(ValueError):
-            parse_value(BY_KEY["max_shared_wallets"], "-1")
+            parse_value(BY_KEY["max_carry_over_bags"], "-1")
         with self.assertRaises(ValueError):
             parse_value(BY_KEY["team_score"], "101")          # points are 0–100
         with self.assertRaises(ValueError):
             parse_value(BY_KEY["slips_per_hour"], "0")        # scoring targets must be > 0
 
     def test_zero_allowed_for_maximums(self):
-        self.assertEqual(parse_value(BY_KEY["max_high_risk_duplicates"], "0"), 0.0)
+        self.assertEqual(parse_value(BY_KEY["max_carry_over_bags"], "0"), 0.0)
 
     def test_clean_collects_all_errors_and_drops_unknown(self):
         with self.assertRaises(TargetError) as cm:
@@ -77,7 +86,7 @@ class TestSharedFile(_TempDir):
 
     def test_save_and_read_back(self):
         now = datetime.datetime(2026, 6, 20, 14, 5)
-        saved = save_targets({"team_score": "80", "slips_per_hour": "28", "team_daily_value": ""},
+        saved = save_targets({"team_score": "80", "slips_per_hour": "28", "min_cashier_score": ""},
                              self.file, now=now)
         self.assertEqual(saved, {"team_score": 80.0, "slips_per_hour": 28.0})
         self.assertEqual(read_targets_file(self.file), (saved, None))
@@ -109,80 +118,58 @@ class TestSharedFile(_TempDir):
 
 class TestCompare(unittest.TestCase):
     def test_higher_is_better(self):
-        c = compare("team_score", 72, {"team_score": 80})
+        c = compare("team_score", 72, 80)
         self.assertEqual((c["gap"], round(c["gap_pct"], 1), c["met"]), (-8, -10.0, False))
 
     def test_lower_is_better(self):
-        c = compare("max_shared_wallets", 1, {"max_shared_wallets": 2})
+        c = compare("max_carry_over_bags", 1, 2)
         self.assertEqual((c["gap"], c["met"]), (-1, True))
 
     def test_no_target_set(self):
-        c = compare("team_score", 72, {})
+        c = compare("team_score", 72, None)
         self.assertEqual((c["target"], c["gap"], c["met"]), (None, None, None))
 
 
-class TestTargetsInScore(_TempDir):
-    def setUp(self):
-        super().setUp()
-        self.hist = os.path.join(self.dir, "hist.csv")
-        pd.DataFrame([("19.06.2026", "Alice", "1001", 100, 20000),
-                      ("18.06.2026", "Bob", "1002", 300, 60000)],
-                     columns=["Date", "Name", "Operator_Id", "System Count", "Total Value"]
-                     ).to_csv(self.hist, index=False)
-        self.df = pd.DataFrame([("Alice", "1001", 100.0)] * 160 + [("Bob", "1002", 50.0)] * 80,
-                               columns=["Cashier Name", OPERATOR, AMOUNT])
-
-    def perf(self, scope, targets):
-        return compute_performance(self.df, scope, active_date=ACTIVE, today=TODAY,
-                                   history_path=self.hist, mistakes_by_c={}, targets=targets)
-
-    def test_without_targets_history_average_is_used(self):
-        r = self.perf("This Report", {})
-        self.assertEqual((r.target_slips, r.target_value, r.target_per_hour), (200.0, 40000.0, 25))
-        self.assertEqual(r.target_sources, {"slips": "history", "value": "history", "per_hour": "default"})
-
-    def test_manager_targets_replace_defaults_and_change_scores(self):
-        base = {x["name"]: x for x in self.perf("This Report", {}).rows}
-        r = self.perf("This Report", {"cashier_daily_slips": 100, "slips_per_hour": 10})
-        self.assertEqual((r.target_slips, r.target_value, r.target_per_hour), (100.0, 40000.0, 10.0))
-        self.assertEqual(r.target_sources, {"slips": "manager", "value": "history", "per_hour": "manager"})
-        bob = {x["name"]: x for x in r.rows}["Bob"]
-        self.assertGreater(bob["score"], base["Bob"]["score"])   # easier targets → higher score
-        self.assertEqual(bob["throughput"], bob["slips_per_hr"] / 10.0)
-
-    def test_working_days(self):
-        self.assertEqual(self.perf("This Report", {}).working_days, [TODAY])
-        self.assertEqual(self.perf("This Week", {}).working_days,
-                         [datetime.date(2026, 6, 18), datetime.date(2026, 6, 19), TODAY])
+def _report(rows):
+    out = []
+    for name, op, n, amount in rows:
+        out += [(name, op, amount)] * n
+    return pd.DataFrame(out, columns=["Cashier Name", OPERATOR, AMOUNT])
 
 
-class TestProgress(TestTargetsInScore):
-    def test_performance_progress(self):
-        targets = {"team_daily_slips": 300, "min_cashier_score": 70, "max_error_rate": 5}
-        r = self.perf("This Report", targets)
-        items = {i["key"]: i for i in performance_progress(r, targets)}
-        self.assertEqual(items["team_daily_slips"]["actual"], 240)       # 160 + 80, one day
-        self.assertEqual((items["team_daily_slips"]["gap"], items["team_daily_slips"]["met"]), (-60, False))
-        scores = {x["name"]: x["score"] for x in r.rows}
-        self.assertEqual(items["min_cashier_score"]["actual"], min(scores.values()))
-        self.assertEqual(items["min_cashier_score"]["who"],
-                         sorted(n for n, s in scores.items() if s < 70))
-        self.assertTrue(items["max_error_rate"]["met"])                  # no mistakes
-        self.assertIsNone(items["team_score"]["met"])                    # no target set
-        self.assertIn("history", items["cashier_daily_slips"]["note"])
+class TestProgress(unittest.TestCase):
+    """Alice 200 slips (25/hr), Bob 100 slips (12.5/hr), one 8-hour day."""
 
-    def test_cashiers_below_daily_slips_target(self):
-        targets = {"cashier_daily_slips": 100}
-        r = self.perf("This Report", targets)
-        item = next(i for i in performance_progress(r, targets) if i["key"] == "cashier_daily_slips")
-        self.assertEqual(item["who"], ["Bob"])                            # 80 < 100
+    def perf(self, targets, bags=None):
+        df = _report([("Alice", "1001", 200, 2500.0), ("Bob", "1002", 100, 2500.0)])
+        return compute_performance(df, "This Report", active_date=ACTIVE, today=TODAY,
+                                   history_path=os.devnull, mistakes_by_c={},
+                                   targets=targets, bag_log=bags or {})
 
-    def test_integrity_progress(self):
-        res = IntegrityResult(high_risk_count=2, suspicious_count=0, shared_wallet_count=1)
-        items = {i["key"]: i for i in integrity_progress(res, {"max_high_risk_duplicates": 0})}
-        self.assertEqual((items["max_high_risk_duplicates"]["actual"],
-                          items["max_high_risk_duplicates"]["met"]), (2, False))
-        self.assertIsNone(items["max_shared_wallets"]["met"])
+    def items(self, targets, bags=None):
+        return {i["key"]: i for i in performance_progress(self.perf(targets, bags), targets)}
+
+    def test_slips_per_hour_against_default(self):
+        item = self.items({})["slips_per_hour"]
+        self.assertEqual((item["actual"], item["target"], item["met"]), (18.75, 25, False))
+        self.assertEqual(item["who"], ["Bob"])
+
+    def test_team_and_lowest_score(self):
+        items = self.items({"team_score": 80, "min_cashier_score": 70})
+        self.assertEqual((items["team_score"]["actual"], items["team_score"]["met"]), (76, False))
+        self.assertEqual(items["min_cashier_score"]["who"], ["Bob"])
+
+    def test_no_target_set(self):
+        self.assertIsNone(self.items({})["team_score"]["met"])
+
+    def test_carry_over_progress(self):
+        items = self.items({}, bags={ACTIVE: {"bags": 40, "carried_over": 3}})
+        carry = items["max_carry_over_bags"]
+        self.assertEqual((carry["actual"], carry["target"], carry["met"]), (3, 0, False))
+        self.assertEqual(carry["who"], [ACTIVE])
+
+    def test_no_bag_log_no_carry_item(self):
+        self.assertNotIn("max_carry_over_bags", self.items({}))
 
 
 if __name__ == "__main__":

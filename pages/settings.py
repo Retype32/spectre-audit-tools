@@ -40,8 +40,8 @@ def _divider():
 # =============================================================================
 
 def _fmt_target(value):
-    """Show 220.0 as "220" and 2.5 as "2.5" (no scientific notation)."""
-    return str(int(value)) if float(value).is_integer() else f"{value}"
+    """Show 10000.0 as "10,000" and 2.5 as "2.5" (no scientific notation)."""
+    return f"{int(value):,}" if float(value).is_integer() else f"{value}"
 
 
 class SettingsPage(QWidget):
@@ -303,9 +303,10 @@ class SettingsPage(QWidget):
         lay.addWidget(title)
 
         desc = QLabel(
-            "Targets the team works to. They are saved in one shared file, so everyone "
-            "using this Spectre folder sees the same targets. Leave a box empty for no target. "
-            "The first three are used in every cashier's performance score."
+            "Targets and rules the team works to. They are saved in one shared file, so "
+            "everyone using this Spectre folder sees the same numbers. Leave a box empty to "
+            "use the default shown in it. Slips per hour, bags carried over and the 360 rules "
+            "change how cashier scores are calculated."
         )
         desc.setStyleSheet(f"color:{Theme.TXT_3}; font-size:12px;")
         desc.setWordWrap(True)
@@ -326,10 +327,8 @@ class SettingsPage(QWidget):
 
                 edit = QLineEdit()
                 edit.setFixedWidth(120)
-                if t.key == "slips_per_hour":
-                    edit.setPlaceholderText("25 if empty")
-                elif t.in_score:
-                    edit.setPlaceholderText("History avg")
+                if t.default is not None:
+                    edit.setPlaceholderText(f"{_fmt_target(t.default)} if empty")
                 else:
                     edit.setPlaceholderText("No target")
                 edit.setToolTip(t.description)
@@ -337,6 +336,8 @@ class SettingsPage(QWidget):
                 self._target_edits[t.key] = edit
 
                 unit = QLabel(f"{'at least' if t.better == 'higher' else 'at most'}  ·  {t.unit}")
+                if t.kind == "rule":
+                    unit.setText(f"rule  ·  {t.unit}")
                 unit.setStyleSheet(f"color:{Theme.TXT_3}; font-size:11px;")
                 unit.setFixedWidth(130)
 

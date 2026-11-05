@@ -3,22 +3,27 @@ scoring.py — Pure-Python cashier performance scoring logic.
 
 No Qt dependency.  Safe to import in headless / test environments.
 
-Score (0–100) = six positive components − mistake penalties
+Score (0–100) per working day = positive components − mistake penalties.
+Slips per hour is what matters most; cash volume only adds a small bonus.
 
-Positive components (max 90 pts for a single session, 100 pts for multi-day):
-  Throughput   25 pts — slips/hr vs 25/hr target (capped at 1.2×)
-  Value        20 pts — total € vs fixed daily target
-  Slip Count   15 pts — total slips vs fixed daily target
-  Accuracy     20 pts — (1 − mistake_rate) × 20
-  Consistency  10 pts — score stability over time (multi-day scopes only)
-  Clean Ratio  10 pts — % of slips untouched by any mistake
+Positive components (max 90 pts for one day, 100 pts over several days):
+  Slips per hour  50 pts — slips/hr vs the day's target (25/hr for VMS).
+                           Capped at 100% of target. On a day when every bag
+                           was cleared, the target is lowered to the pace the
+                           team actually managed (there was no more work).
+  Cash volume     10 pts — cash per hour vs the team's average that day,
+                           capped at 100%: keeping up with the team's cash
+                           counts a little, but slips always count more.
+  Accuracy        20 pts — (1 − mistake_rate) × 20
+  Consistency     10 pts — score stability over time (multi-day scopes only)
+  Clean Ratio     10 pts — % of slips untouched by any mistake
 
-Mistake penalties (deducted from the above, floor at 0):
-  Duplicate Slip      −12 pts each
-  Miscredit           −12 pts each
-  Money Lost          −15 pts each
-  Slip Not Processed   −8 pts each
-  Small Mistake        −3 pts each
+Not scored: 360 processing days (very high cash, few slips — see
+is_360_day) and non-VMS (e.g. ISA) days. The slips-per-hour target applies
+to VMS work only.
+
+Mistake penalties (deducted from the above, floor at 0) are in
+config.MISTAKE_TYPES. A confirmed duplicate is the most serious (−20).
 """
 import datetime
 import logging
@@ -32,14 +37,15 @@ from config import DUPLICATE_VERDICTS_DB, MISTAKES_DB, MISTAKE_TYPES, TEN_HOUR_O
 
 # ── Operator / shift constants ────────────────────────────────────────────────
 _TEN_HOUR_OP_IDS    = TEN_HOUR_OP_IDS   # set in local_settings.json
-_TARGET_PER_HOUR    = 25
-_DEFAULT_TARGET_SLIPS = 200
-_DEFAULT_TARGET_VALUE = 50_000.0
+_TARGET_PER_HOUR    = 25                # VMS slips per hour (manager can change)
+
+# 360 processing: a cashier-day with very high cash per slip and few slips
+DEFAULT_360_MIN_CASH_PER_SLIP = 10_000.0
+DEFAULT_360_MAX_SLIPS         = 100
 
 # ── Score component weights ───────────────────────────────────────────────────
-_W_THROUGHPUT  = 25
-_W_VALUE       = 20
-_W_SLIPS       = 15
+_W_SLIP_RATE   = 50
+_W_CASH        = 10
 _W_ACCURACY    = 20
 _W_CONSISTENCY = 10
 _W_CLEAN_RATIO = 10
@@ -90,54 +96,31 @@ _shift_hours = shift_hours
 
 # ── Target derivation ─────────────────────────────────────────────────────────
 
-def compute_targets(hist_df) -> tuple:
-    """Derive target daily slips and daily value from historical averages.
+def is_360_day(slips, value, min_cash_per_slip=DEFAULT_360_MIN_CASH_PER_SLIP,
+               max_slips=DEFAULT_360_MAX_SLIPS) -> bool:
+    """True if one cashier's day looks like 360 processing: few slips with a
+    very high average cash per slip (e.g. 45 slips and €1.5m)."""
+    return 0 < slips <= max_slips and value / slips >= min_cash_per_slip
 
-    Falls back to module defaults if history is empty or unreadable.
-    Returns (target_slips: float, target_value: float).
+
+def score_day(slips, value, op_id, mistakes, rate_target, cash_per_hour_baseline) -> dict:
+    """Score one cashier for one working day (0–90 before consistency).
+
+    rate_target:            slips per hour expected that day (normally 25)
+    cash_per_hour_baseline: the team's average cash per hour that day
     """
-    if hist_df is None or hist_df.empty:
-        return float(_DEFAULT_TARGET_SLIPS), _DEFAULT_TARGET_VALUE
-    try:
-        counts = pd.to_numeric(
-            hist_df.get("System Count", pd.Series(dtype=float)), errors="coerce"
-        ).dropna()
-        values = pd.to_numeric(
-            hist_df.get("Total Value", pd.Series(dtype=float)), errors="coerce"
-        ).dropna()
-        t_slips = float(counts.mean()) if len(counts) > 0 else float(_DEFAULT_TARGET_SLIPS)
-        t_value = float(values.mean()) if len(values) > 0 else _DEFAULT_TARGET_VALUE
-        return max(t_slips, 1.0), max(t_value, 1.0)
-    except Exception:
-        return float(_DEFAULT_TARGET_SLIPS), _DEFAULT_TARGET_VALUE
-
-
-_compute_targets = compute_targets
-
-
-# ── Per-session scoring ───────────────────────────────────────────────────────
-
-def score_one_session(slips, value, op_id, mistakes,
-                      target_slips, target_value, target_per_hour=None) -> dict:
-    """Compute base score (0–90) for a single working day.
-
-    Returns a dict with every component score and metadata.
-    Consistency is always 0.0 here — computed separately by the caller.
-    target_per_hour defaults to _TARGET_PER_HOUR (25) when not given.
-    """
-    if target_per_hour is None:
-        target_per_hour = _TARGET_PER_HOUR
     hours        = shift_hours(op_id)
     slips_per_hr = slips / hours if hours else 0.0
+    cash_per_hr  = value / hours if hours else 0.0
 
-    # Throughput: capped at 1.2× target to prevent over-reward for extreme speed
-    thr_ratio  = slips_per_hr / target_per_hour
-    thr_score  = min(float(_W_THROUGHPUT), min(thr_ratio, 1.2) * _W_THROUGHPUT)
+    rate_ratio = slips_per_hr / rate_target if rate_target else 0.0
+    rate_score = _W_SLIP_RATE * min(rate_ratio, 1.0)
 
-    val_score  = min(float(_W_VALUE),
-                     (value / target_value) * _W_VALUE if target_value else 0.0)
-    slip_score = min(float(_W_SLIPS),
-                     (slips / target_slips) * _W_SLIPS if target_slips else 0.0)
+    if cash_per_hour_baseline and cash_per_hour_baseline > 0:
+        cash_ratio = min(cash_per_hr / cash_per_hour_baseline, 1.0)
+    else:
+        cash_ratio = 1.0          # nothing to compare with — no penalty
+    cash_score = _W_CASH * cash_ratio
 
     mistake_count = len(mistakes)
     error_rate    = mistake_count / slips if slips else 0.0
@@ -146,13 +129,12 @@ def score_one_session(slips, value, op_id, mistakes,
 
     penalty = sum(m["points"] for m in mistakes)
 
-    base  = thr_score + val_score + slip_score + acc_score + clean_score
+    base  = rate_score + cash_score + acc_score + clean_score
     total = max(0.0, min(100.0, base - penalty))
 
     return {
-        "thr_score":     round(thr_score,   1),
-        "val_score":     round(val_score,   1),
-        "slip_score":    round(slip_score,  1),
+        "rate_score":    round(rate_score,  1),
+        "cash_score":    round(cash_score,  1),
         "acc_score":     round(acc_score,   1),
         "clean_score":   round(clean_score, 1),
         "consistency":   0.0,
@@ -160,11 +142,10 @@ def score_one_session(slips, value, op_id, mistakes,
         "base":          round(base, 1),
         "total":         round(total, 1),
         "slips_per_hr":  round(slips_per_hr, 2),
+        "cash_per_hr":   round(cash_per_hr, 2),
+        "rate_target":   rate_target,
         "mistake_count": mistake_count,
     }
-
-
-_score_one_session = score_one_session
 
 
 # ── Multi-day aggregation helpers ─────────────────────────────────────────────
@@ -253,7 +234,7 @@ def load_confirmed_dups_as_mistakes(cutoff=None) -> list:
                 "date":    date_str,
                 "cashier": str(row.get("cashier", "")).strip(),
                 "type":    "duplicate_slip",
-                "points":  12,
+                "points":  MISTAKE_TYPES["duplicate_slip"]["points"],
                 "notes":   "Confirmed duplicate (auto)",
             })
     except Exception:

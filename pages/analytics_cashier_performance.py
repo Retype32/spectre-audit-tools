@@ -1,33 +1,19 @@
 """
 pages/analytics_cashier_performance.py — Cashier Performance Analytics.
 
-Score (0–100) = six positive components − mistake penalties
+Display only: every number comes from engine.performance (which days count,
+each day's targets) and scoring.py (the per-day score):
 
-Positive components (max 90 pts for single session, 100 pts for multi-day):
-  Throughput   25 pts — slips/hr vs 25/hr target (capped at 1.2×, prevents over-reward)
-  Value        20 pts — total € vs fixed daily target (NOT vs best colleague)
-  Slip Count   15 pts — total slips vs fixed daily target (NOT vs best colleague)
-  Accuracy     20 pts — (1 − mistake_rate) × 20
-  Consistency  10 pts — score stability over time (multi-day scopes only)
-  Clean Ratio  10 pts — % of slips untouched by any mistake
+  Slips per hour  50 pts — vs 25/hr (VMS); lower on days when all bags were cleared
+  Cash volume     10 pts — vs the team's average cash per hour that day (capped)
+  Accuracy        20 pts — (1 − mistake_rate) × 20
+  Consistency     10 pts — score stability over time (multi-day scopes only)
+  Clean Ratio     10 pts — % of slips untouched by any mistake
+  minus mistake penalties (a confirmed duplicate is the most serious, −20)
 
-Mistake penalties (deducted after metrics, final score floored at 0):
-  Duplicate Slip      −12 pts each
-  Miscredit           −12 pts each
-  Money Lost          −15 pts each
-  Slip Not Processed   −8 pts each
-  Small Mistake        −3 pts each
-
-Confirmed duplicates from Integrity Check auto-map to Duplicate Slip penalties.
-Daily slips / daily value targets are the manager's targets (Settings → Team
-Targets) when set; otherwise the historical average in Performance_History.csv —
-never the best performer on a given day, which removes inter-cashier distortion.
-The slips-per-hour target is the manager's target, or 25 when not set.
-
-Recency weighting (3M / 6M / 12M views):
-  Most recent third of period → 50 % weight
-  Middle third               → 30 % weight
-  Oldest third               → 20 % weight
+360 processing days and non-VMS (e.g. ISA) days are listed but not scored.
+Recency weighting (3M / 6M / 12M views): most recent third 50 %, middle 30 %,
+oldest 20 %.
 """
 import datetime
 import logging
@@ -44,11 +30,13 @@ from config import MISTAKE_TYPES
 from theme import Theme
 
 from engine.performance import compute_performance, log_mistake, sort_rows, team_summary
+from engine.volume import available_months, current_month, monthly_volume
 from scoring import (
     penalty_summary as _penalty_summary,
-    _W_THROUGHPUT, _W_VALUE, _W_SLIPS,
+    _W_SLIP_RATE, _W_CASH,
     _W_ACCURACY, _W_CONSISTENCY, _W_CLEAN_RATIO, SCOPES,
 )
+from widgets import DataTable
 
 _SCOPES = SCOPES
 
@@ -255,9 +243,8 @@ class BreakdownDialog(QDialog):
         single = (scope == "This Report")
 
         components = [
-            ("Throughput",   bd.get("thr_score",  0), _W_THROUGHPUT,  Theme.ACCENT),
-            ("Value",        bd.get("val_score",  0), _W_VALUE,        Theme.INFO),
-            ("Slip Count",   bd.get("slip_score", 0), _W_SLIPS,        Theme.GOLD),
+            ("Slips / hour", bd.get("rate_score", 0), _W_SLIP_RATE,   Theme.ACCENT),
+            ("Cash volume",  bd.get("cash_score", 0), _W_CASH,         Theme.INFO),
             ("Accuracy",     bd.get("acc_score",  0), _W_ACCURACY,     Theme.OK),
             ("Consistency",  cons if cons is not None else None, _W_CONSISTENCY, "#7eb8ff"),
             ("Clean Ratio",  bd.get("clean_score",0), _W_CLEAN_RATIO,  Theme.PURPLE),
@@ -401,6 +388,92 @@ class BreakdownDialog(QDialog):
             lay.addWidget(note)
 
 
+# ── Monthly cash volume dialog ────────────────────────────────────────────────
+
+class MonthlyVolumeDialog(QDialog):
+    """Cash volume per cashier for one month, highest cash per hour first."""
+
+    COLUMNS = ("Cashier", "Days", "Slips", "Cash €", "Cash/day €", "Cash/hr €",
+               "Slips/hr", "Speed ±%", "Cash/slip €", "Size ±%",
+               "360 days", "360 cash €", "Other days")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Monthly Cash Volume")
+        self.resize(1340, 560)
+        self.setStyleSheet(f"QDialog{{background:{Theme.BG};color:{Theme.TXT};}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Month:"))
+        self._month = QComboBox()
+        months = available_months() or [current_month()]
+        for m in months:
+            self._month.addItem(m)
+        self._month.currentTextChanged.connect(self._load)
+        top.addWidget(self._month)
+        top.addStretch()
+        lay.addLayout(top)
+
+        note = QLabel(
+            "Cash per hour = slips per hour × cash per slip.  'Speed ±%' compares slips per "
+            "hour with the team, 'Size ±%' compares cash per slip (lodgement size) — together "
+            "they show why a cashier's cash rate is high or low.  360 and non-VMS (other) days "
+            "are left out of the rates."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{Theme.TXT_3};font-size:11px;")
+        lay.addWidget(note)
+
+        self._summary = QLabel()
+        self._summary.setStyleSheet(f"color:{Theme.TXT_2};font-size:12px;")
+        lay.addWidget(self._summary)
+
+        self._table = DataTable(self.COLUMNS)
+        for col in self.COLUMNS:
+            self._table.set_column_width(col, 170 if col == "Cashier" else 92)
+        lay.addWidget(self._table, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        lay.addWidget(close_btn)
+        self._load(self._month.currentText())
+
+    @staticmethod
+    def _pct(v):
+        return None if v is None else int(round(v))
+
+    def _load(self, month):
+        self._table.clear()
+        try:
+            data = monthly_volume(month)
+        except Exception as e:
+            logging.exception("MonthlyVolumeDialog._load")
+            self._summary.setText(f"Could not read the history: {e}")
+            return
+        t = data["team"]
+        self._summary.setText(
+            f"{month}:  {t['cashiers']} cashiers  ·  {t['working_days']} working days  ·  "
+            f"€{t['cash']:,.0f} cash  ·  team €{t['cash_per_hour']:,.0f}/hr, "
+            f"{t['slips_per_hour']:.1f} slips/hr, €{t['cash_per_slip']:,.0f}/slip"
+            + (f"  ·  360: {t['days_360']} day(s), €{t['cash_360']:,.0f}" if t["days_360"] else ""))
+        # Raw numbers (not text) so clicking a column header sorts correctly
+        for r in data["rows"]:
+            self._table.add_row({
+                "Cashier": r["name"], "Days": r["days"], "Slips": r["slips"],
+                "Cash €": int(round(r["cash"])), "Cash/day €": int(round(r["cash_per_day"])),
+                "Cash/hr €": int(round(r["cash_per_hour"])),
+                "Slips/hr": round(r["slips_per_hour"], 1),
+                "Speed ±%": self._pct(r["slips_per_hour_vs_team_pct"]),
+                "Cash/slip €": int(round(r["cash_per_slip"])),
+                "Size ±%": self._pct(r["cash_per_slip_vs_team_pct"]),
+                "360 days": r["days_360"], "360 cash €": int(round(r["cash_360"])),
+                "Other days": r["days_other"],
+            })
+        self._table.sortByColumn(self.COLUMNS.index("Cash/hr €"), Qt.DescendingOrder)
+
+
 # ── Clickable row widget ───────────────────────────────────────────────────────
 
 class _ClickableRow(QFrame):
@@ -471,16 +544,23 @@ class CashierPerformancePage(QWidget):
         self._log_btn.setMinimumWidth(120)
         self._log_btn.clicked.connect(self._open_log_mistake)
 
+        self._month_btn = QPushButton("Monthly Cash Volume")
+        self._month_btn.setFixedHeight(34)
+        self._month_btn.setMinimumWidth(150)
+        self._month_btn.clicked.connect(self._open_monthly_volume)
+
         hdr.addWidget(scope_lbl)
         hdr.addWidget(self._scope)
+        hdr.addWidget(self._month_btn)
         hdr.addWidget(self._log_btn)
         hdr.addWidget(run_btn)
         root.addLayout(hdr)
 
         sub = QLabel(
-            "Scores each cashier across six dimensions: throughput, value, slip volume, "
-            "accuracy, consistency, and clean work ratio.  Click any row to see the full "
-            "score breakdown.  Mistakes are logged with  + Log Mistake  and applied automatically."
+            "Scores each cashier on slips per hour first, with a small bonus for keeping up "
+            "with the team's cash, plus accuracy, consistency and clean work.  360 processing "
+            "and non-VMS days are listed but not scored.  Click any row to see the full score "
+            "breakdown.  Mistakes are logged with  + Log Mistake  and applied automatically."
         )
         sub.setStyleSheet(f"color:{Theme.TXT_3};font-size:12px;")
         sub.setWordWrap(True)
@@ -491,8 +571,8 @@ class CashierPerformancePage(QWidget):
 
         # Fairness note
         fair_lbl = QLabel(
-            "Scores compare against fixed targets, not colleagues — "
-            "a fast colleague does not reduce your score."
+            "Slips are measured against 25 per hour (lower on days when every bag was "
+            "cleared). Cash only adds a small bonus for keeping up with the team's average."
         )
         fair_lbl.setStyleSheet(
             f"color:{Theme.OK};font-size:10px;font-weight:600;"
@@ -503,9 +583,8 @@ class CashierPerformancePage(QWidget):
         # Component pills row
         pill_row = QHBoxLayout(); pill_row.setSpacing(6)
         for label, pts, color in [
-            ("Throughput\nslips/hr vs 25/hr",    "25 pts", Theme.ACCENT),
-            ("Value\nvs daily target",           "20 pts", Theme.INFO),
-            ("Slip Count\nvs daily target",      "15 pts", Theme.GOLD),
+            ("Slips per hour\nvs 25/hr (VMS)",   "50 pts", Theme.ACCENT),
+            ("Cash volume\nvs team average",     "10 pts", Theme.INFO),
             ("Accuracy\nmistake-rate based",     "20 pts", Theme.OK),
             ("Consistency\nstability over time", "10 pts", "#7eb8ff"),
             ("Clean Ratio\n% error-free slips",  "10 pts", Theme.PURPLE),
@@ -639,6 +718,15 @@ class CashierPerformancePage(QWidget):
         psc_lay.addWidget(self._targets_lbl)
         root.addWidget(self._perf_score_card)
 
+        self._unscored_lbl = QLabel()
+        self._unscored_lbl.setWordWrap(True)
+        self._unscored_lbl.setVisible(False)
+        self._unscored_lbl.setStyleSheet(
+            f"color:{Theme.TXT_2};font-size:11px;background:{Theme.SURFACE};"
+            f"border:1px solid {Theme.BORDER_S};border-radius:8px;padding:10px 14px;"
+        )
+        root.addWidget(self._unscored_lbl)
+
         # ── Sort bar ──────────────────────────────────────────────────
         self._sort_frame = QFrame()
         self._sort_frame.setVisible(False)
@@ -768,12 +856,13 @@ class CashierPerformancePage(QWidget):
         try:
             scope  = self._scope.currentText()
             result = compute_performance(
-                df, scope, active_date=getattr(self.app, "_active_report_date", None)
+                df, scope, active_date=getattr(self.app, "_active_report_date", None),
+                report_fmt=getattr(self.app, "_active_report_fmt", "VMS"),
             )
             if result is None:          # report has no "Cashier Name" column
                 return
             raw_rows = result.rows
-            target_slips, target_value = result.target_slips, result.target_value
+            self._show_unscored(result)
 
             if not raw_rows:
                 self._no_data.setVisible(True)
@@ -845,29 +934,44 @@ class CashierPerformancePage(QWidget):
             )
 
             # Targets note
-            src = result.target_sources
-            if "manager" not in src.values():
-                self._targets_lbl.setText(
-                    f"Targets (from history)\n"
-                    f"Daily slips:  {target_slips:.0f}\n"
-                    f"Daily value:  €{target_value:,.0f}"
-                )
-            else:
-                def _from(key):
-                    return {"manager": "set by manager", "history": "from history"}.get(
-                        src.get(key), "default")
-                self._targets_lbl.setText(
-                    f"Targets\n"
-                    f"Daily slips:  {target_slips:.0f}  ({_from('slips')})\n"
-                    f"Daily value:  €{target_value:,.0f}  ({_from('value')})\n"
-                    f"Slips/hr:  {result.target_per_hour:g}  ({_from('per_hour')})"
-                )
+            rate = result.target_per_hour
+            src = "set by manager" if result.target_sources.get("per_hour") == "manager" else "default"
+            logged = [d for d in result.days if d["bags"] is not None]
+            cleared = [d for d in logged if d["cleared"]]
+            lines = [
+                "Targets",
+                f"Slips/hr:  {rate:g}  ({src})",
+                f"Per day:  {rate * 8:g} (8 hr) / {rate * 10:g} (10 hr)",
+                "Cash:  vs team average that day",
+            ]
+            if logged:
+                lines.append(f"Bags cleared:  {len(cleared)} of {len(logged)} logged day(s)")
+            self._targets_lbl.setText("\n".join(lines))
             self._perf_score_card.setVisible(True)
             self._no_data.setVisible(False)
             self._render_rows(raw_rows)
 
         except Exception:
             logging.exception("CashierPerformancePage.compute")
+
+    def _show_unscored(self, result):
+        """List 360 / non-VMS cashier-days that are not scored."""
+        if not result.unscored:
+            self._unscored_lbl.setVisible(False)
+            return
+        parts = []
+        for u in result.unscored[:12]:
+            kind = "360" if u["kind"] == "360" else u["format"]
+            parts.append(f"{u['name']} ({kind}, {u['date']}: {u['slips']} slips, "
+                         f"€{u['value']:,.0f})")
+        more = len(result.unscored) - 12
+        self._unscored_lbl.setText(
+            "Not scored — 360 processing or non-VMS work:  " + "  ·  ".join(parts)
+            + (f"  ·  +{more} more" if more > 0 else ""))
+        self._unscored_lbl.setVisible(True)
+
+    def _open_monthly_volume(self):
+        MonthlyVolumeDialog(self).exec()
 
     # ── Render rows ───────────────────────────────────────────────────────────
     def _render_rows(self, rows):
@@ -1030,6 +1134,7 @@ class CashierPerformancePage(QWidget):
             self._pills_frame.setVisible(False)
             self._sort_frame.setVisible(False)
             self._perf_score_card.setVisible(False)
+            self._unscored_lbl.setVisible(False)
         else:
             self._scope.setCurrentIndex(0)
             self.compute()

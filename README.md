@@ -224,6 +224,12 @@ Spectre computes `Difference = Physical − System` for each cashier and saves t
 
 The detail table below the tiles breaks down results per cashier or location.
 
+#### Daily Bag Log
+
+At the bottom of the tab, record each day's **Bags in** and **Carried over** (bags not processed that day) and click **Save Day**. Loading a report moves the date to that report's date. The log is one shared file (`Slip Audits\Bag_Log.csv`), so the whole team sees the same numbers; the table shows the last 14 logged days with the completion % and whether the day was **cleared**.
+
+A day is cleared when no more bags were carried over than the allowed number (Settings → Team Targets, 0 by default). On a cleared day the team ran out of work, so the slips-per-hour target for that day drops to the pace the team actually managed — a quiet day where every bag was processed scores well.
+
 ---
 
 ### 3.6 History
@@ -376,15 +382,36 @@ Full color themes are scaffolded for a future release. The current active theme 
 
 ### Team Targets
 
-The targets the team works to, set by the manager. Type a number in each box you want a target for, leave the rest empty, and click **Save Targets**.
+The targets and rules the team works to, set by the manager. Type a number in each box you want to change, leave the rest empty to use the default shown in the box, and click **Save Targets**.
 
-- Targets are saved in **one shared file**, `targets.json` in the Spectre folder (`BASE_PATH`). Everyone who runs Spectre from the same shared folder works to the same targets. Opening Settings again shows any changes someone else saved.
-- Every target is optional. An empty box means no target.
-- The first three targets are **used in every cashier's score**:
-  - **Daily slips per cashier** and **Daily value per cashier**: when empty, the team's historical average is used (the previous behaviour).
-  - **Slips per hour**: when empty, 25 per hour is used.
-- The **Cashier Performance** tab shows which targets it is using and whether each came from the manager or from history.
-- The other targets (team score, lowest acceptable score, team totals per day, mistakes per 100 slips, and the Integrity Check, Slip Audit, Discrepancies, Risk Scoring and Data Quality limits) don't change any score. They are what actual results are compared against when asking how far the team is from its goals.
+- Everything is saved in **one shared file**, `targets.json` in the Spectre folder (`BASE_PATH`), so everyone who runs Spectre from the same shared folder works to the same numbers. Opening Settings again shows changes someone else saved.
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| **Slips per hour (VMS)** | 25 | Every regular VMS cashier's target. Daily volume follows from shift length (200 for 8 hours, 250 for 10 hours). Used in the score. |
+| **Team score** | none | Compared with the team's average score. |
+| **Lowest acceptable cashier score** | none | Cashiers below it are listed when comparing against targets. |
+| **Bags carried over per day** | 0 | A day with no more carry-over than this is *cleared*, which lowers that day's slips-per-hour target to the pace the team managed. |
+| **360: average cash per slip of at least** | €10,000 | With the next rule, marks a cashier's day as 360 processing. |
+| **360: no more than this many slips** | 100 | A day with more slips is never treated as 360. |
+
+### How cashier scores work
+
+Each cashier's working day is scored out of 90, and multi-day periods add up to 10 for consistency:
+
+| Part | Points | Measured against |
+|------|--------|------------------|
+| Slips per hour | 50 | The slips-per-hour target (25), or the team's pace on a cleared day. Capped at 100%. |
+| Cash volume | 10 | The team's average cash per hour that day, capped at 100%. Keeping up with the team's cash counts a little; slips always count more. |
+| Accuracy | 20 | Logged mistakes per slip. |
+| Clean ratio | 10 | Share of slips with no mistake. |
+| Consistency | 10 | How steady the daily scores are (multi-day periods only). |
+
+Mistake penalties are then taken off. A **confirmed duplicate** is the most serious (−20), then money lost (−15), miscredit (−12), slip not processed (−8) and small mistake (−3). Mistakes on days that weren't scored still count against the period.
+
+**Not scored:** 360 processing days (few slips with very high cash per slip — see the 360 rules above) and non-VMS days such as ISA. They are listed under the team score and don't affect the team's averages.
+
+**Monthly Cash Volume** (button on the Cashier Performance tab) shows each cashier's cash per hour for a month, and why: *Speed ±%* compares their slips per hour with the team, *Size ±%* compares their cash per slip. 360 and non-VMS days are shown separately.
 
 ---
 
@@ -510,8 +537,8 @@ Common causes: missing PySide6 (`pip install PySide6`), Python version below 3.1
 
 | Folder / file | What's in it |
 |---------------|--------------|
-| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period, team summary, ranking, logging mistakes), `targets.py` (team targets: shared file, validation, actual-vs-target comparison). |
-| `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: cashier scoring, duplicate verdicts, shared helpers. |
+| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period: which days count, each day's targets, team summary, ranking, logging mistakes), `targets.py` (team targets and rules: shared file, validation, actual-vs-target comparison), `bags.py` (daily bag log), `volume.py` (monthly cash volume per cashier). |
+| `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: the per-day score and 360 rule, duplicate verdicts, shared helpers. |
 | `pages/`, `widgets/`, `main_window.py` | The PySide6 user interface. Pages call into `engine/` rather than doing the calculations themselves. |
 
 Keep new calculations in `engine/` (or another Qt-free module) so they can be tested and reused by scripts.

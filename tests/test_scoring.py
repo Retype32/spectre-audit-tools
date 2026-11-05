@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import scoring
-from scoring import grade as _grade, shift_hours as _shift_hours, score_one_session
+from scoring import grade as _grade, is_360_day, score_day, shift_hours as _shift_hours
 
 # Fictional operator IDs used in place of the real ones from local_settings.json
 _FAKE_TEN_HOUR_IDS = frozenset({"10001", "10002"})
@@ -77,77 +77,81 @@ class TestShiftHours(unittest.TestCase):
         self.assertEqual(_shift_hours(" 10001 "), 10)
 
 
-class TestScoreCalculation(unittest.TestCase):
-    """End-to-end score formula tests against the 6-component model."""
+class TestScoreDay(unittest.TestCase):
+    """One working day: slips per hour (50) + cash (10) + accuracy (20) + clean (10)."""
 
-    def _score(self, slips, value, op_id="99999", mistakes=None,
-               target_slips=200, target_value=50_000.0):
-        result = score_one_session(
-            slips, value, op_id, mistakes or [], target_slips, target_value
-        )
-        return result["total"]
+    def _score(self, slips, value, op_id="99999", mistakes=None, rate=25, cash_base=60_000.0):
+        return score_day(slips, value, op_id, mistakes or [], rate, cash_base)["total"]
 
-    def test_perfect_single_session_scores_90(self):
-        # Perfect on all 5 metric components; consistency is N/A for a single session
-        # thr=25, val=20, slip=15, acc=20, clean=10, penalty=0 → base=90, total=90
-        score = self._score(200, 50_000)
-        self.assertEqual(score, 90.0)
+    def test_on_target_scores_90(self):
+        # 8h × 25/hr = 200 slips → 50; cash at team average (€60k/hr) → 10; 20 + 10
+        self.assertEqual(self._score(200, 480_000), 90.0)
 
-    def test_score_capped_at_100(self):
-        # Well above all targets — should not exceed 100
-        score = self._score(600, 200_000)
-        self.assertLessEqual(score, 100.0)
+    def test_slips_above_target_are_capped(self):
+        self.assertEqual(self._score(300, 480_000), 90.0)
 
-    def test_zero_transactions_scores_30(self):
-        # 0 slips → throughput=0, value=0, slip=0, but error_rate=0 so acc+clean = 30
-        score = self._score(0, 0)
-        self.assertEqual(score, 30.0)
+    def test_cash_above_team_average_is_capped(self):
+        self.assertEqual(self._score(200, 2_000_000), 90.0)
 
-    def test_duplicate_slip_penalty_applied(self):
-        # Perfect session minus one duplicate slip (−12); error_rate affects acc/clean slightly
-        m = {"type": "duplicate_slip", "points": 12, "date": "", "cashier": "", "notes": ""}
-        score = self._score(200, 50_000, mistakes=[m])
-        self.assertEqual(score, 77.9)
+    def test_zero_work_keeps_accuracy_only(self):
+        # no slips, no cash → 0 + 0 + 20 + 10
+        self.assertEqual(self._score(0, 0), 30.0)
 
-    def test_two_mistakes_penalty(self):
-        # error_rate = 2/200 = 0.01; acc=19.8, clean=9.9 → base=89.7 − 24 = 65.7
-        m = {"type": "duplicate_slip", "points": 12, "date": "", "cashier": "", "notes": ""}
-        score = self._score(200, 50_000, mistakes=[m, m])
-        self.assertEqual(score, 65.7)
-
-    def test_penalty_floored_at_zero(self):
-        # Heavy penalties on a zero-score session cannot go negative
-        m = {"type": "money_lost", "points": 15, "date": "", "cashier": "", "notes": ""}
-        score = self._score(0, 0, mistakes=[m, m, m, m, m, m, m, m])
-        self.assertEqual(score, 0.0)
-
-    @mock.patch.object(scoring, "_TEN_HOUR_OP_IDS", _FAKE_TEN_HOUR_IDS)
-    def test_10h_shift_operator_gets_perfect_score(self):
-        # op 10001 → 10h shift; 250 slips = 25/hr = target → thr=25
-        # val=20, slip=15 (250 vs target 200, capped), acc=20, clean=10 → 90
-        score = self._score(250, 50_000, op_id="10001")
-        self.assertEqual(score, 90.0)
-
-    def test_throughput_capped_at_1_2x_target(self):
-        # 8h shift; 240 slips = 30/hr = 1.2× target → thr capped at 25 (max)
-        # slip_score = min(15, (240/200)*15) = 15 (capped), everything else max → 90
-        score = self._score(240, 50_000)
-        self.assertEqual(score, 90.0)
-
-    def test_half_throughput_and_half_value_reduces_score(self):
-        # 8h; 100 slips = 12.5/hr = 0.5 of target → thr=12.5
-        # slip_score = min(15, (100/200)*15) = 7.5
-        # val_score = min(20, (25000/50000)*20) = 10
-        # acc=20, clean=10, penalty=0 → base = 12.5+10+7.5+20+10 = 60 → grade C
-        score = self._score(100, 25_000)
+    def test_half_slips_and_half_cash(self):
+        # 100 slips = 50% → 25; €240k = 50% of team cash/hr → 5; + 30 → 60 (C)
+        score = self._score(100, 240_000)
         self.assertEqual(score, 60.0)
         self.assertEqual(_grade(score), "C")
 
+    def test_slips_count_more_than_cash(self):
+        # Balanced (95% slips, full cash) beats all-slips/half-cash a little...
+        balanced = self._score(190, 480_000)
+        slips_only = self._score(200, 240_000)
+        self.assertGreater(balanced, slips_only)
+        # ...but a big slips gap always beats cash
+        self.assertGreater(self._score(200, 240_000), self._score(140, 2_000_000))
+
+    def test_no_team_cash_to_compare_gives_full_cash_points(self):
+        self.assertEqual(score_day(200, 0, "99999", [], 25, 0)["cash_score"], 10.0)
+
+    def test_lower_rate_target_on_cleared_day(self):
+        # Team ran out of work at 15/hr: 120 slips over 8h meets that target
+        self.assertEqual(score_day(120, 480_000, "99999", [], 15, 60_000)["rate_score"], 50.0)
+
+    def test_duplicate_penalty_applied(self):
+        m = {"type": "duplicate_slip", "points": 20, "date": "", "cashier": "", "notes": ""}
+        # error rate 1/200: accuracy 19.9 + clean 9.95 + 60 = 89.85 − 20 = 69.85
+        self.assertAlmostEqual(self._score(200, 480_000, mistakes=[m]), 69.85, delta=0.051)
+
+    def test_penalty_floored_at_zero(self):
+        m = {"type": "duplicate_slip", "points": 20, "date": "", "cashier": "", "notes": ""}
+        self.assertEqual(self._score(0, 0, mistakes=[m] * 5), 0.0)
+
+    @mock.patch.object(scoring, "_TEN_HOUR_OP_IDS", _FAKE_TEN_HOUR_IDS)
+    def test_10h_shift_needs_250_slips(self):
+        self.assertEqual(self._score(250, 600_000, op_id="10001"), 90.0)
+        self.assertLess(self._score(200, 600_000, op_id="10001"), 90.0)
+
     def test_grade_derived_from_score(self):
-        # score 90 → A
         self.assertEqual(_grade(90), "A")
-        # score 78 → B
         self.assertEqual(_grade(78), "B")
+
+
+class TestIs360Day(unittest.TestCase):
+    def test_few_slips_and_huge_cash(self):
+        self.assertTrue(is_360_day(45, 1_500_000))           # ~€33k per slip
+
+    def test_regular_day(self):
+        self.assertFalse(is_360_day(200, 500_000))           # €2.5k per slip
+
+    def test_many_slips_never_360(self):
+        self.assertFalse(is_360_day(150, 3_000_000))         # over 100 slips
+
+    def test_no_slips(self):
+        self.assertFalse(is_360_day(0, 1_000_000))
+
+    def test_custom_thresholds(self):
+        self.assertTrue(is_360_day(60, 400_000, min_cash_per_slip=5_000, max_slips=80))
 
 
 if __name__ == "__main__":

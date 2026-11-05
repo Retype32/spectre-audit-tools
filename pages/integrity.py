@@ -444,6 +444,7 @@ class IntegrityPage(QWidget):
 
             df, report_date = report.df, report.report_date
             self.app._active_report_date = report_date   # used by verdict keys
+            self.app._active_report_fmt = report.fmt      # "VMS" or "ISA"
             self.app.active_df = df.copy()
             self.app._active_report_path = report.filename
 
@@ -487,7 +488,7 @@ class IntegrityPage(QWidget):
                         self._show_detail(rd); return
             self.sus_table.rowDoubleClicked.connect(_on_sus_dbl)
 
-            archive_report(df, report_date)
+            archive_report(df, report_date, fmt=report.fmt)
 
             search_page = self.app.pages.get('search')
             if search_page:

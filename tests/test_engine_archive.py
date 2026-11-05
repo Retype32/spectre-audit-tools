@@ -91,6 +91,25 @@ class TestPerformanceHistory(_TempDir):
         self.assertEqual(out.loc["Alice", "System Count"], "2")
         self.assertEqual(out.loc["Alice", "Total Value"], "295.0")
         self.assertEqual(out.loc["Bob", "Operator_Id"], "1002")
+        self.assertEqual(out.loc["Bob", "Format"], "VMS")
+
+    def test_vms_and_isa_same_day_kept_apart(self):
+        db = self.path("perf.csv")
+        save_performance_history(_report(), "15.06.2026", db_path=db, fmt="VMS")
+        save_performance_history(_report(), "15.06.2026", db_path=db, fmt="ISA")
+        save_performance_history(_report(), "15.06.2026", db_path=db, fmt="ISA")
+        out = pd.read_csv(db, dtype=str)
+        self.assertEqual(out["Format"].value_counts().to_dict(), {"VMS": 2, "ISA": 2})
+
+    def test_old_rows_without_format_count_as_vms(self):
+        db = self.path("perf.csv")
+        pd.DataFrame([("15.06.2026", "Alice", "1001", "9", "9.0")],
+                     columns=["Date", "Name", "Operator_Id", "System Count", "Total Value"]
+                     ).to_csv(db, index=False)
+        save_performance_history(_report(), "15.06.2026", db_path=db, fmt="VMS")
+        out = pd.read_csv(db, dtype=str)
+        self.assertEqual(len(out), 2)                       # old VMS row replaced
+        self.assertNotIn("9", out["System Count"].tolist())
 
 
 if __name__ == "__main__":

@@ -144,8 +144,12 @@ def archive_all_discrepancies(df, report_date, db_path=ALL_DISC_DB):
         logging.error(f"All-disc archive error: {e}")
 
 
-def save_performance_history(df, report_date, db_path=PERFORMANCE_HISTORY_DB):
-    """Per-cashier slip count and total value for this report → db_path (CSV)."""
+def save_performance_history(df, report_date, db_path=PERFORMANCE_HISTORY_DB, fmt="VMS"):
+    """Per-cashier slip count and total value for this report → db_path (CSV).
+
+    `fmt` ("VMS" or "ISA") is stored too, so a VMS and an ISA report for the
+    same date don't overwrite each other. Older rows without a Format count
+    as VMS."""
     try:
         if "Cashier Name" not in df.columns:
             return
@@ -166,6 +170,7 @@ def save_performance_history(df, report_date, db_path=PERFORMANCE_HISTORY_DB):
                 "Operator_Id":  op_id,
                 "System Count": txn_count,
                 "Total Value":  round(total_val, 2),
+                "Format":       fmt,
             })
 
         if not rows:
@@ -176,7 +181,11 @@ def save_performance_history(df, report_date, db_path=PERFORMANCE_HISTORY_DB):
         if os.path.exists(db_path):
             try:
                 existing = pd.read_csv(db_path, dtype=str)
-                existing = existing[existing["Date"] != str(row_date)]
+                if "Format" not in existing.columns:
+                    existing["Format"] = "VMS"
+                existing["Format"] = existing["Format"].fillna("VMS")
+                same = (existing["Date"] == str(row_date)) & (existing["Format"] == fmt)
+                existing = existing[~same]
                 combined = pd.concat([existing, new_df.astype(str)], ignore_index=True)
             except Exception:
                 combined = new_df.astype(str)
@@ -191,9 +200,9 @@ def save_performance_history(df, report_date, db_path=PERFORMANCE_HISTORY_DB):
         logging.exception("Unhandled exception")
 
 
-def archive_report(df, report_date):
+def archive_report(df, report_date, fmt="VMS"):
     """Write all history files for a checked report (configured locations)."""
     archive_small_discrepancies(df, report_date)
     archive_customer_discrepancies(df, report_date)
     archive_all_discrepancies(df, report_date)
-    save_performance_history(df, report_date)
+    save_performance_history(df, report_date, fmt=fmt)

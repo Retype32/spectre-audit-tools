@@ -1,14 +1,13 @@
 """
-engine/targets.py — team targets set by the manager.
+engine/targets.py — team targets and rules set by the manager.
 
-Targets are kept in ONE shared file (config.TARGETS_FILE, under BASE_PATH —
-the network drive in production) so everyone works to the same numbers.
-They are edited in Settings → Team Targets.
+Kept in ONE shared file (config.TARGETS_FILE, under BASE_PATH — the network
+drive in production) so everyone works to the same numbers. Edited in
+Settings → Team Targets.
 
-Every target is optional. A blank target means "no target", except for the
-three scoring targets, where blank keeps Spectre's built-in behaviour:
-daily slips and daily value fall back to the team's historical average, and
-slips per hour falls back to 25.
+Every entry is optional. A blank entry uses its default (e.g. 25 slips per
+hour, 0 bags carried over, the 360 thresholds) or, for entries without a
+default, means "no target".
 
 Pure Python, no Qt.
 """
@@ -19,6 +18,7 @@ import os
 from dataclasses import dataclass
 
 from config import TARGETS_FILE
+from scoring import DEFAULT_360_MAX_SLIPS, DEFAULT_360_MIN_CASH_PER_SLIP, _TARGET_PER_HOUR
 
 FILE_VERSION = 1
 
@@ -27,58 +27,44 @@ FILE_VERSION = 1
 class TargetDef:
     key: str
     label: str          # shown in Settings and to the agent
-    unit: str           # "slips", "€", "slips/hr", "points", "%", "count"
-    better: str         # "higher" or "lower" is better
-    group: str          # the Spectre tab the target belongs to
+    unit: str           # "slips/hr", "points", "bags", "€", "slips"
+    better: str         # "higher" or "lower" is better (for rules: the direction of the limit)
+    group: str          # where it belongs
     description: str
-    in_score: bool = False   # used by the cashier performance score
+    default: float = None    # used when blank (None = no target)
+    in_score: bool = False   # changes how scores are calculated
     positive: bool = False   # must be > 0 (not just >= 0)
+    kind: str = "target"     # "target" (compared with results) or "rule" (a setting)
 
 
 TARGETS = [
-    # ── Cashier Performance: used in every cashier's score ────────────────
-    TargetDef("cashier_daily_slips", "Daily slips per cashier", "slips", "higher",
+    # ── Cashier Performance ───────────────────────────────────────────────
+    TargetDef("slips_per_hour", "Slips per hour (VMS)", "slips/hr", "higher",
               "Cashier Performance",
-              "Used in the score. Blank = the team's historical average.",
-              in_score=True, positive=True),
-    TargetDef("cashier_daily_value", "Daily value per cashier", "€", "higher",
-              "Cashier Performance",
-              "Used in the score. Blank = the team's historical average.",
-              in_score=True, positive=True),
-    TargetDef("slips_per_hour", "Slips per hour", "slips/hr", "higher",
-              "Cashier Performance",
-              "Used in the score. Blank = 25 per hour.",
-              in_score=True, positive=True),
-    # ── Cashier Performance: team goals ───────────────────────────────────
+              "Every regular VMS cashier's target. Daily volume follows from shift length "
+              "(e.g. 200 for 8 hours, 250 for 10 hours). Used in the score.",
+              default=_TARGET_PER_HOUR, in_score=True, positive=True),
     TargetDef("team_score", "Team score", "points", "higher", "Cashier Performance",
               "Average cashier score for the period (0–100)."),
     TargetDef("min_cashier_score", "Lowest acceptable cashier score", "points", "higher",
-              "Cashier Performance",
-              "Every cashier should score at least this (0–100)."),
-    TargetDef("team_daily_slips", "Team slips per day", "slips", "higher",
-              "Cashier Performance", "All cashiers together, per working day."),
-    TargetDef("team_daily_value", "Team value per day", "€", "higher",
-              "Cashier Performance", "All cashiers together, per working day."),
-    TargetDef("max_error_rate", "Mistakes per 100 slips", "%", "lower",
-              "Cashier Performance", "Logged mistakes and confirmed duplicates, per 100 slips."),
-    # ── Integrity Check: per report ───────────────────────────────────────
-    TargetDef("max_high_risk_duplicates", "High-risk duplicates per report", "count", "lower",
-              "Integrity Check", "Identical-duplicate pairs found in one report."),
-    TargetDef("max_suspicious_patterns", "Suspicious patterns per report", "count", "lower",
-              "Integrity Check", "Repeated-amount pairs found in one report."),
-    TargetDef("max_shared_wallets", "Shared wallets per report", "count", "lower",
-              "Integrity Check", "Wallets used by more than one operator in one report."),
-    # ── Other tabs (compared once their figures are available to the agent) ─
-    TargetDef("max_missing_slips", "Missing slips per audit", "slips", "lower",
-              "Slip Audit", "Slips in the system but not found in the physical count, whole team."),
-    TargetDef("max_discrepancies_per_day", "Discrepancies per day", "count", "lower",
-              "Discrepancies", "Non-zero discrepancies per report date (blind counts excluded)."),
-    TargetDef("max_discrepancy_value_per_day", "Discrepancy value per day", "€", "lower",
-              "Discrepancies", "Total of shortages and overages per report date (blind counts excluded)."),
-    TargetDef("max_high_risk_cashiers", "Cashiers in the high-risk band", "count", "lower",
-              "Risk Scoring", "Cashiers with a risk score of 61 or more."),
-    TargetDef("min_data_quality", "Data quality score", "points", "higher",
-              "Data Quality", "Overall data quality score of a report (0–100)."),
+              "Cashier Performance", "Every cashier should score at least this (0–100)."),
+    # ── Daily bags ────────────────────────────────────────────────────────
+    TargetDef("max_carry_over_bags", "Bags carried over per day", "bags", "lower",
+              "Daily Bags",
+              "A day is cleared when no more than this many bags are carried over. On a "
+              "cleared day the slips-per-hour target drops to the pace the team managed, "
+              "because there was no more work. Used in the score.",
+              default=0, in_score=True),
+    # ── 360 processing ────────────────────────────────────────────────────
+    TargetDef("proc360_min_cash_per_slip", "360: average cash per slip of at least", "€",
+              "higher", "360 Processing",
+              "With the next rule, marks a cashier's day as 360 processing. 360 days are "
+              "not scored and don't affect the team's averages.",
+              default=DEFAULT_360_MIN_CASH_PER_SLIP, in_score=True, positive=True, kind="rule"),
+    TargetDef("proc360_max_slips", "360: no more than this many slips", "slips", "lower",
+              "360 Processing",
+              "A day with more slips than this is never treated as 360, however high the cash.",
+              default=DEFAULT_360_MAX_SLIPS, in_score=True, positive=True, kind="rule"),
 ]
 BY_KEY = {t.key: t for t in TARGETS}
 GROUPS = list(dict.fromkeys(t.group for t in TARGETS))
@@ -92,10 +78,16 @@ class TargetError(ValueError):
         self.errors = errors
 
 
+def effective(targets, key):
+    """The value in force: the manager's value, else the default (may be None)."""
+    value = targets.get(key)
+    return BY_KEY[key].default if value is None else value
+
+
 # ── Reading and writing the shared file ───────────────────────────────────────
 
 def parse_value(defn, raw):
-    """Turn user input into a target value. Blank → None. Raises ValueError."""
+    """Turn user input into a value. Blank → None. Raises ValueError."""
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -110,7 +102,7 @@ def parse_value(defn, raw):
         raise ValueError(f"{defn.label}: '{raw}' is not a number")
     if value < 0 or (defn.positive and value == 0):
         raise ValueError(f"{defn.label}: must be {'more than' if defn.positive else 'at least'} 0")
-    if defn.unit in ("points", "%") and value > 100:
+    if defn.unit == "points" and value > 100:
         raise ValueError(f"{defn.label}: must be between 0 and 100")
     return value
 
@@ -137,7 +129,7 @@ def clean_targets(values):
 
 def read_targets_file(path=TARGETS_FILE):
     """Return (targets, problem). `problem` is None or a message for the user.
-    A missing file is not a problem: it just means no targets are set."""
+    A missing file is not a problem: it just means nothing is set."""
     if not os.path.exists(path):
         return {}, None
     try:
@@ -194,14 +186,13 @@ def save_targets(values, path=TARGETS_FILE, now=None):
 
 # ── Comparing actual figures with targets ─────────────────────────────────────
 
-def compare(key, actual, targets, who=None, note=""):
+def compare(key, actual, target, who=None, note=""):
     """One target line: actual vs target, how far off, and whether it's met.
 
     gap = actual − target (negative means below target).
-    who = names that miss the target individually, where that applies.
+    who = names (or dates) that miss the target individually.
     """
     defn = BY_KEY[key]
-    target = targets.get(key)
     item = {
         "key": key, "label": defn.label, "unit": defn.unit, "better": defn.better,
         "group": defn.group, "target": target, "actual": actual,
@@ -216,64 +207,36 @@ def compare(key, actual, targets, who=None, note=""):
 
 
 def performance_progress(result, targets):
-    """Cashier Performance figures for a period vs targets.
+    """Cashier Performance and daily-bag figures for a period vs targets.
 
     result: engine.performance.PerformanceResult
     """
+    items = []
     rows = result.rows
-    if not rows:
-        return []
-    total_txn = sum(r["txn"] for r in rows)
-    total_val = sum(r["value"] for r in rows)
-    sessions = sum(r["sessions"] for r in rows)
-    days = len(result.working_days) or 1
-    scores = [r["score"] for r in rows]
-    mistakes = sum(r["mistakes"] for r in rows)
+    if rows:
+        scores = [r["score"] for r in rows]
+        rate_target = effective(targets, "slips_per_hour")
+        cleared = sum(1 for d in result.days if d.get("cleared"))
+        items.append(compare(
+            "slips_per_hour", sum(r["slips_per_hr"] for r in rows) / len(rows), rate_target,
+            who=[r["name"] for r in rows if r["throughput"] < 1.0],
+            note=(f"'who' = below their own target for the days worked; "
+                  f"{cleared} cleared day(s) used a lower target.")))
+        team_t = targets.get("team_score")
+        items.append(compare("team_score", int(sum(scores) / len(scores)), team_t))
+        min_t = targets.get("min_cashier_score")
+        items.append(compare("min_cashier_score", min(scores), min_t,
+                             who=[r["name"] for r in rows if min_t is not None and r["score"] < min_t]))
 
-    def per_day(r, field):
-        return r[field] / r["sessions"] if r["sessions"] else 0.0
-
-    def below(key, value_of):
-        t = targets.get(key)
-        if t is None:
-            return []
-        better = BY_KEY[key].better
-        return [r["name"] for r in rows
-                if (value_of(r) < t if better == "higher" else value_of(r) > t)]
-
-    def err_rate(r):
-        return r["mistakes"] / r["txn"] * 100 if r["txn"] else 0.0
-
-    return [
-        compare("cashier_daily_slips", total_txn / sessions if sessions else 0.0, targets,
-                below("cashier_daily_slips", lambda r: per_day(r, "txn")),
-                f"Target used in the score: {result.target_slips:.0f} "
-                f"({result.target_sources.get('slips', 'history')})."),
-        compare("cashier_daily_value", total_val / sessions if sessions else 0.0, targets,
-                below("cashier_daily_value", lambda r: per_day(r, "value")),
-                f"Target used in the score: €{result.target_value:,.0f} "
-                f"({result.target_sources.get('value', 'history')})."),
-        compare("slips_per_hour", sum(r["slips_per_hr"] for r in rows) / len(rows), targets,
-                below("slips_per_hour", lambda r: r["slips_per_hr"]),
-                f"Target used in the score: {result.target_per_hour:g} per hour "
-                f"({result.target_sources.get('per_hour', 'default')})."),
-        compare("team_score", int(sum(scores) / len(scores)), targets),
-        compare("min_cashier_score", min(scores), targets,
-                below("min_cashier_score", lambda r: r["score"])),
-        compare("team_daily_slips", total_txn / days, targets, note=f"{days} working day(s)."),
-        compare("team_daily_value", total_val / days, targets, note=f"{days} working day(s)."),
-        compare("max_error_rate", mistakes / total_txn * 100 if total_txn else 0.0, targets,
-                below("max_error_rate", err_rate)),
-    ]
-
-
-def integrity_progress(result, targets):
-    """Integrity Check counts for one report vs targets.
-
-    result: engine.detection.IntegrityResult
-    """
-    return [
-        compare("max_high_risk_duplicates", result.high_risk_count, targets),
-        compare("max_suspicious_patterns", result.suspicious_count, targets),
-        compare("max_shared_wallets", result.shared_wallet_count, targets),
-    ]
+    logged = [d for d in result.days if d.get("bags") is not None]
+    if logged:
+        max_carry = effective(targets, "max_carry_over_bags")
+        avg_carry = sum(d["carried_over"] for d in logged) / len(logged)
+        items.append(compare(
+            "max_carry_over_bags", avg_carry, max_carry,
+            who=[d["date"] for d in logged if d["carried_over"] > max_carry],
+            note=(f"Average over {len(logged)} logged day(s); "
+                  f"{sum(d['bags'] for d in logged)} bags in, "
+                  f"{sum(d['carried_over'] for d in logged)} carried over. "
+                  f"'who' = days over the limit.")))
+    return items

@@ -12,17 +12,21 @@ try:
 except ImportError:
     xlrd = None
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+    QApplication, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget
 )
 
-from config import XLRD_AVAILABLE
+from config import BAG_LOG_DB, XLRD_AVAILABLE
+from engine.bags import BagLogError, day_status, load_bag_log, save_bag_day
+from engine.targets import effective, load_targets
 
 from theme import Theme
 
 from utils import extract_report_date, msg_err
 
-from widgets import Card, FieldLabel, StatCard
+from widgets import Card, DataTable, FieldLabel, StatCard
 
 
 
@@ -73,7 +77,37 @@ class BagCounterPage(QWidget):
             self.info_lbls[k] = val
         info.body.addLayout(ig)
         outer.addWidget(info)
-        outer.addStretch(1)
+
+        # Daily bag log: bags in and carried over, shared with the whole team
+        bag_card = Card("Daily Bag Log",
+                        "bags in and carried over — shows whether the day was cleared")
+        br = QHBoxLayout(); br.setSpacing(10)
+        br.addWidget(FieldLabel("Date"))
+        self.bag_date = QDateEdit(QDate.currentDate())
+        self.bag_date.setCalendarPopup(True)
+        self.bag_date.setDisplayFormat("dd.MM.yyyy")
+        self.bag_date.dateChanged.connect(self._show_bag_day)
+        br.addWidget(self.bag_date)
+        br.addWidget(FieldLabel("Bags in"))
+        self.bags_in = QSpinBox(); self.bags_in.setRange(0, 100000); self.bags_in.setMinimumWidth(90)
+        br.addWidget(self.bags_in)
+        br.addWidget(FieldLabel("Carried over"))
+        self.bags_carry = QSpinBox(); self.bags_carry.setRange(0, 100000); self.bags_carry.setMinimumWidth(90)
+        br.addWidget(self.bags_carry)
+        save_bag_btn = QPushButton("Save Day"); save_bag_btn.setObjectName("primary")
+        save_bag_btn.clicked.connect(self.save_bag_day)
+        br.addWidget(save_bag_btn)
+        br.addStretch()
+        bag_card.body.addLayout(br)
+        self.bag_status = QLabel()
+        self.bag_status.setStyleSheet(f"color:{Theme.TXT_3}; font-size:11px;")
+        bag_card.body.addWidget(self.bag_status)
+        self.bag_table = DataTable(("Date", "Bags in", "Carried over", "Processed",
+                                    "Completion", "Cleared"))
+        self.bag_table.setMinimumHeight(200)
+        bag_card.body.addWidget(self.bag_table)
+        outer.addWidget(bag_card, 1)
+        self._refresh_bag_log()
 
     def run_bag_count(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Report", "",
@@ -142,7 +176,56 @@ class BagCounterPage(QWidget):
 
             self.info_lbls["File"].setText(os.path.basename(path))
             self.info_lbls["Date"].setText(rd)
+            qd = QDate.fromString(rd, "dd.MM.yyyy")
+            if qd.isValid():
+                self.bag_date.setDate(qd)
             self.info_lbls["Mode"].setText(mode)
             self.app.top_status.set(f"✓ {ub} unique / {ts} slips / €{total:,.2f}", "success")
         except Exception as e:
             logging.exception("Unhandled exception"); msg_err(self, "Error", str(e))
+
+    # ── Daily bag log ─────────────────────────────────────────────────────
+    def _bag_date_str(self):
+        return self.bag_date.date().toString("dd.MM.yyyy")
+
+    def _refresh_bag_log(self):
+        """Show the last 14 logged days and the selected day's numbers."""
+        try:
+            log = load_bag_log(BAG_LOG_DB)
+            max_carry = effective(load_targets(), "max_carry_over_bags")
+        except Exception as e:
+            logging.exception("Bag log")
+            self.bag_status.setText(f"Could not read the bag log: {e}")
+            return
+        self.bag_table.clear()
+        dated = sorted(log.items(), key=lambda kv: datetime.datetime.strptime(kv[0], "%d.%m.%Y"),
+                       reverse=True)
+        for date, entry in dated[:14]:
+            st = day_status(entry, max_carry)
+            self.bag_table.add_row({
+                "Date": date, "Bags in": st["bags"], "Carried over": st["carried_over"],
+                "Processed": st["processed"], "Completion": f"{st['completion_pct']:.0f}%",
+                "Cleared": "Yes" if st["cleared"] else "No",
+            })
+        self._log_cache = log
+        self._show_bag_day()
+
+    def _show_bag_day(self, *_):
+        entry = getattr(self, "_log_cache", {}).get(self._bag_date_str())
+        self.bags_in.setValue(entry["bags"] if entry else 0)
+        self.bags_carry.setValue(entry["carried_over"] if entry else 0)
+        self.bag_status.setText(
+            f"{self._bag_date_str()}: saved — {entry['bags']} in, {entry['carried_over']} carried over."
+            if entry else f"{self._bag_date_str()}: not logged yet.  Shared file: {BAG_LOG_DB}")
+
+    def save_bag_day(self):
+        date = self._bag_date_str()
+        try:
+            save_bag_day(date, self.bags_in.value(), self.bags_carry.value(), BAG_LOG_DB)
+        except BagLogError as e:
+            msg_err(self, "Bag Log", str(e)); return
+        except Exception as e:
+            logging.exception("Saving bag log"); msg_err(self, "Bag Log", str(e)); return
+        logging.info(f"Bag log saved for {date}: {self.bags_in.value()} in, "
+                     f"{self.bags_carry.value()} carried over")
+        self._refresh_bag_log()

@@ -80,6 +80,8 @@ DISCREPANCY_DB_PATH = os.path.join(BASE_PATH, "Discrepancies Database")
 SLIP_AUDIT_PATH = os.path.join(BASE_PATH, "Slip Audits")
 SLIP_HISTORY_DB         = os.path.join(SLIP_AUDIT_PATH, "Audit_Database.csv")
 PERFORMANCE_HISTORY_DB  = os.path.join(SLIP_AUDIT_PATH, "Performance_History.csv")
+# Daily bag numbers entered in the Bag Counter tab (bags in, carried over)
+BAG_LOG_DB              = os.path.join(SLIP_AUDIT_PATH, "Bag_Log.csv")
 CUSTOMER_DISC_DB      = os.path.join(DISCREPANCY_DB_PATH, "Customer_Discrepancy_DB.csv")
 DUPLICATE_VERDICTS_DB = os.path.join(DISCREPANCY_DB_PATH, "duplicate_verdicts.csv")
 ALL_DISC_DB           = os.path.join(DISCREPANCY_DB_PATH, "All_Discrepancies_DB.csv")
@@ -91,7 +93,8 @@ TARGETS_FILE          = os.path.join(BASE_PATH, "targets.json")
 
 # Mistake types and their penalty severity (points deducted from final score)
 MISTAKE_TYPES = {
-    "duplicate_slip":     {"label": "Duplicate Slip",      "points": 12},
+    # A confirmed duplicate is the most serious mistake, so it costs the most
+    "duplicate_slip":     {"label": "Duplicate Slip",      "points": 20},
     "miscredit":          {"label": "Miscredit",           "points": 12},
     "money_lost":         {"label": "Money Lost",          "points": 15},
     "slip_not_processed": {"label": "Slip Not Processed",  "points":  8},
