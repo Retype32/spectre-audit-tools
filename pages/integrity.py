@@ -2,11 +2,7 @@
 pages/integrity — IntegrityPage + DuplicateReviewDialog.
 """
 
-import datetime
 import logging
-import os
-
-import pandas as pd
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -15,15 +11,15 @@ from PySide6.QtWidgets import (
     QSplitter, QVBoxLayout, QWidget,
 )
 
-from config import (ALL_DISC_DB, AMOUNT, COL_DISC, CUSTOMER_DISC_DB, CUSTOMER_ID,
-                    CUSTOMER_LOC, DISCREPANCY_DB_PATH,
-                    EXPECTED_TOTAL, LODGEMENT, OPERATOR, WALLET)
+from config import AMOUNT, LODGEMENT, OPERATOR
+
+from engine import ReportError, archive_report, load_report, run_integrity_checks, summarise
 
 from verdicts import load_verdicts, save_verdict, verdict_key
 
 from theme import Theme
 
-from utils import extract_report_date, load_db_map, msg_err, msg_info, msg_warn
+from utils import msg_err, msg_info, msg_warn
 
 from widgets import Card, DataTable, DetailDialog, FilteredRowsDialog, StatCard
 
@@ -344,11 +340,6 @@ class IntegrityPage(QWidget):
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _row_dict(self, idx, row):
-        d = {'_line': idx + 2}
-        for col in row.index: d[col] = row[col]
-        return d
-
     def _show_detail(self, rd):
         DetailDialog.show_row(self.app,
             f"{rd.get('Cashier Name', 'Unknown')} · Line {rd.get('_line', '?')}",
@@ -430,178 +421,6 @@ class IntegrityPage(QWidget):
                     self._show_detail(rd); return
         self.dup_table.rowDoubleClicked.connect(_on_dbl)
 
-    # ── archiving ─────────────────────────────────────────────────────────────
-
-    def archive_customer_discrepancies(self, df, report_date):
-        if COL_DISC not in df.columns or CUSTOMER_ID not in df.columns:
-            return
-        try:
-            df2 = df.copy()
-            df2[COL_DISC] = pd.to_numeric(df2[COL_DISC], errors='coerce').fillna(0)
-            df2[AMOUNT]   = pd.to_numeric(df2[AMOUNT],   errors='coerce').fillna(0)
-            rows = []
-            for cid, grp in df2.groupby(CUSTOMER_ID):
-                loc = ''
-                if CUSTOMER_LOC in grp.columns:
-                    loc_series = grp[CUSTOMER_LOC].dropna().astype(str)
-                    loc = loc_series.mode().iloc[0] if not loc_series.empty else ''
-                small    = grp[(grp[COL_DISC].abs() > 0) & (grp[COL_DISC].abs() <= 10)]
-                all_disc = grp[grp[COL_DISC].abs() > 0]
-                not_decl = grp[(grp[AMOUNT] > 0) &
-                               ((grp[COL_DISC].abs() - grp[AMOUNT].abs()).abs() < 0.01)]
-                rows.append({
-                    'Customer_Id':         str(cid),
-                    'Customer_Location':   loc,
-                    'Report_Date':         str(report_date),
-                    'Total_Transactions':  len(grp),
-                    'All_Discrepancies':   len(all_disc),
-                    'Small_Disc_Count':    len(small),
-                    'Small_Disc_Amount':   round(float(small[COL_DISC].abs().sum()), 2),
-                    'Not_Declaring_Count': len(not_decl),
-                })
-            if not rows:
-                return
-            new_df = pd.DataFrame(rows).astype(str)
-            if os.path.exists(CUSTOMER_DISC_DB):
-                try:
-                    existing = pd.read_csv(CUSTOMER_DISC_DB, dtype=str)
-                    existing = existing[existing['Report_Date'] != str(report_date)]
-                    combined = pd.concat([existing, new_df], ignore_index=True)
-                except Exception:
-                    combined = new_df
-            else:
-                combined = new_df
-            combined.to_csv(CUSTOMER_DISC_DB, index=False)
-        except Exception as e:
-            logging.error(f"Customer disc archive error: {e}")
-
-    def archive_discrepancies(self, df, report_date):
-        if COL_DISC not in df.columns: return
-        try:
-            df = df.copy()
-            df[COL_DISC] = pd.to_numeric(df[COL_DISC], errors='coerce').fillna(0)
-            disc = df[(df[COL_DISC].abs() > 0) & (df[COL_DISC].abs() <= 10)].copy()
-            if disc.empty: return
-            try: pd_date = datetime.datetime.strptime(report_date, "%d.%m.%Y")
-            except Exception: pd_date = datetime.datetime.now()
-            folder = os.path.join(DISCREPANCY_DB_PATH, pd_date.strftime("%Y"), pd_date.strftime("%m"))
-            os.makedirs(folder, exist_ok=True)
-            fp = os.path.join(folder, f"{report_date.replace('/', '.')}.xlsx")
-            sm = disc.groupby(['Cashier Name', OPERATOR]).size().reset_index(name='Small_Discrepancies')
-            sm['Report_Date'] = report_date
-            sm.to_excel(fp, index=False)
-        except Exception as e:
-            logging.error(f"Archive error: {e}")
-
-    def archive_all_discrepancies(self, df, report_date):
-        """Append every non-zero Discrepancy row from this report to ALL_DISC_DB.
-        Rows for the same report_date are replaced (idempotent re-run)."""
-        if COL_DISC not in df.columns:
-            return
-        try:
-            disc_df = df.copy()
-            disc_df[COL_DISC] = pd.to_numeric(disc_df[COL_DISC], errors='coerce').fillna(0)
-            disc_df = disc_df[disc_df[COL_DISC] != 0].copy()
-            if disc_df.empty:
-                return
-
-            exp_col = EXPECTED_TOTAL if EXPECTED_TOTAL in disc_df.columns else None
-
-            def _clean_id(v):
-                """Convert float IDs like 12345678.0 → '12345678'."""
-                try:
-                    f = float(v)
-                    return str(int(f)) if not pd.isna(f) else str(v)
-                except (ValueError, TypeError):
-                    return str(v)
-
-            rows = []
-            for _, row in disc_df.iterrows():
-                exp_val = pd.to_numeric(row.get(exp_col, 0), errors='coerce') if exp_col else 0
-                exp_val = 0.0 if pd.isna(exp_val) else round(float(exp_val), 2)
-                disc_type = "Blind Count" if exp_val == 0 else "Discrepancy"
-                rows.append({
-                    "Report Date":      str(report_date),
-                    "Customer ID":      _clean_id(row.get(CUSTOMER_ID, "")),
-                    "Customer Location":str(row.get(CUSTOMER_LOC, "")),
-                    "Expected Total":   exp_val,
-                    "Total Processed":  round(float(pd.to_numeric(row.get(AMOUNT, 0), errors='coerce') or 0), 2),
-                    "Discrepancy":      round(float(row[COL_DISC]), 2),
-                    "Operator ID":      _clean_id(row.get(OPERATOR, "")),
-                    "Cashier Name":     str(row.get("Cashier Name", "")),
-                    "Type":             disc_type,
-                })
-
-            new_df = pd.DataFrame(rows)
-            if os.path.exists(ALL_DISC_DB):
-                try:
-                    existing = pd.read_csv(ALL_DISC_DB, dtype=str)
-                    existing = existing[existing["Report Date"] != str(report_date)]
-                    combined = pd.concat([existing, new_df], ignore_index=True)
-                except Exception:
-                    combined = new_df
-            else:
-                combined = new_df
-            combined.to_csv(ALL_DISC_DB, index=False)
-            logging.info(f"All-discrepancies archive: {len(rows)} rows for {report_date}")
-        except Exception as e:
-            logging.error(f"All-disc archive error: {e}")
-
-    # ── main analysis ─────────────────────────────────────────────────────────
-
-    def _save_performance_history(self, df, report_date):
-        """
-        Save per-cashier slip counts and total values for this report date
-        into SLIP_HISTORY_DB.  Existing rows for the same date are replaced
-        (idempotent: re-running the same report doesn't double-count).
-        Date is extracted from Column A / Column B of the loaded dataframe.
-        """
-        try:
-            from config import PERFORMANCE_HISTORY_DB, AMOUNT, OPERATOR
-
-            if "Cashier Name" not in df.columns:
-                return
-
-            row_date = report_date  # already extracted at load time
-
-            rows = []
-            for name, grp in df.groupby("Cashier Name"):
-                txn_count = len(grp)
-                total_val = float(grp[AMOUNT].sum()) if AMOUNT in df.columns else 0.0
-                op_id = ""
-                if OPERATOR in grp.columns:
-                    op = grp[OPERATOR].mode()
-                    op_id = str(op.iloc[0]).strip() if not op.empty else ""
-                rows.append({
-                    "Date":         row_date,
-                    "Name":         str(name),
-                    "Operator_Id":  op_id,
-                    "System Count": txn_count,
-                    "Total Value":  round(total_val, 2),
-                })
-
-            if not rows:
-                return
-
-            new_df = pd.DataFrame(rows)
-
-            if os.path.exists(PERFORMANCE_HISTORY_DB):
-                try:
-                    existing = pd.read_csv(PERFORMANCE_HISTORY_DB, dtype=str)
-                    existing = existing[existing["Date"] != str(row_date)]
-                    combined = pd.concat([existing, new_df.astype(str)], ignore_index=True)
-                except Exception:
-                    combined = new_df.astype(str)
-            else:
-                combined = new_df.astype(str)
-
-            os.makedirs(os.path.dirname(PERFORMANCE_HISTORY_DB), exist_ok=True)
-            combined.to_csv(PERFORMANCE_HISTORY_DB, index=False)
-            logging.info(f"Performance history saved: {len(rows)} cashiers for {row_date}")
-
-        except Exception:
-            logging.exception("Unhandled exception")
-
     def run_integrity_check(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Report File", "",
             "Excel/CSV files (*.xlsx *.xls *.csv);;All files (*.*)")
@@ -613,105 +432,52 @@ class IntegrityPage(QWidget):
             self.app._shared_wallet_rows = []
             self.sus_table.clear()
 
-            raw_df = (pd.read_csv(path, encoding='utf-8', low_memory=False)
-                      if path.lower().endswith('.csv') else pd.read_excel(path))
-            if raw_df.empty:
-                msg_err(self, "Error", "File is empty"); return
+            try:
+                report = load_report(path)
+            except ReportError as e:
+                if e.report_date:
+                    # Kept from the original flow: the date updates even
+                    # though the report had no usable rows.
+                    self.app._active_report_date = e.report_date
+                (msg_warn if e.level == "warning" else msg_err)(self, e.title, e.message)
+                return
 
-            is_isa = False; df = None
-            for i in range(min(15, len(raw_df))):
-                rv = [str(x).strip() for x in raw_df.iloc[i].values]
-                if any(v in {"Container Seal", "Lodgement Number", "Seal"} for v in rv):
-                    df = raw_df.iloc[i+1:].copy(); df.columns = raw_df.iloc[i].values
-                    df = df.rename(columns={"User": OPERATOR, "Seal": WALLET,
-                                            "Lodgement Number": LODGEMENT, "Counted": AMOUNT})
-                    is_isa = True; break
-            if df is None: df = raw_df.copy()
-
-            if OPERATOR not in df.columns:
-                msg_err(self, "Missing Column", f"'{OPERATOR}' not found"); return
-            if AMOUNT not in df.columns:
-                msg_err(self, "Missing Column", f"'{AMOUNT}' not found"); return
-
-            report_date = extract_report_date(df)
+            df, report_date = report.df, report.report_date
             self.app._active_report_date = report_date   # used by verdict keys
-
-            df = df.dropna(subset=[OPERATOR, AMOUNT])
-            df[AMOUNT] = pd.to_numeric(df[AMOUNT], errors='coerce')
-            df = df.dropna(subset=[AMOUNT]); df[AMOUNT] = df[AMOUNT].round(2)
-            df = df[df[AMOUNT] >= 1.0]
-            if df.empty:
-                msg_warn(self, "No Data", "No valid data"); return
-
-            denoms = [c for c in df.columns
-                      if any(x in str(c).lower() for x in ['100','50','20','10','5','2','1','0.5','0.2'])]
-            for col in denoms:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-            df[OPERATOR] = df[OPERATOR].astype(str).str.strip()
-            if WALLET in df.columns:
-                df[WALLET] = df[WALLET].astype(str).str.strip().replace(['nan','None',''], '[EMPTY]')
-            else:
-                df[WALLET] = '[EMPTY]'
-            df[LODGEMENT] = df[LODGEMENT].astype(str).str.strip() if LODGEMENT in df.columns else '[N/A]'
-
-            cmap = load_db_map()
-            df['Cashier Name'] = df[OPERATOR].map(cmap).fillna(df[OPERATOR])
             self.app.active_df = df.copy()
-            self.app._active_report_path = os.path.basename(path)
+            self.app._active_report_path = report.filename
 
-            hr_keys = [k for k in [OPERATOR, WALLET, LODGEMENT, AMOUNT] + denoms if k in df.columns]
-            exact   = df[df.duplicated(subset=hr_keys, keep=False)].copy()
-            sus_keys = [OPERATOR, WALLET, AMOUNT]
-            all_pot  = df[df.duplicated(subset=sus_keys, keep=False)].copy()
-            sus      = all_pot[~all_pot.index.isin(exact.index)].copy()
-
-            npd = len(exact) // 2 if len(exact) else 0
-            nsp = len(sus)   // 2 if len(sus)   else 0
+            result = run_integrity_checks(df, report.denom_cols)
+            self.app._exact_dup_rows     = result.exact_rows
+            self.app._sus_rows           = result.suspicious_rows
+            self.app._shared_wallet_rows = result.shared_wallet_rows
+            npd, nsp, sw_count = (result.high_risk_count, result.suspicious_count,
+                                  result.shared_wallet_count)
             self.stat_dups.set_value(npd)
             self.stat_sus.set_value(nsp)
+            self.stat_shared.set_value(sw_count)
 
-            sw_count = 0
-            if WALLET in df.columns:
-                wc = df[df[WALLET] != '[EMPTY]'].groupby(WALLET)[OPERATOR].nunique()
-                sw = wc[wc > 1]; sw_count = len(sw)
-                self.stat_shared.set_value(sw_count)
-                if sw_count:
-                    self.app._shared_wallet_rows = [self._row_dict(i, r)
-                        for i, r in df[df[WALLET].isin(sw.index)].iterrows()]
-
-            rt = "ISA" if is_isa else "VMS"
-            self.info_labels["File"].setText(f"{os.path.basename(path)} ({rt})")
-            self.info_labels["Date"].setText(report_date)
-            self.info_labels["Rows"].setText(f"{len(df):,}")
-            self.info_labels["Cashiers"].setText(str(df['Cashier Name'].nunique()))
-            self.info_labels["Value"].setText(f"€{df[AMOUNT].sum():,.2f}")
-
-            # Collect exact duplicate rows
-            if not exact.empty:
-                for _, grp in exact.groupby(hr_keys, dropna=False):
-                    if len(grp) < 2: continue
-                    for idx, r in grp.iterrows():
-                        self.app._exact_dup_rows.append(self._row_dict(idx, r))
+            info = summarise(report)
+            self.info_labels["File"].setText(f"{info['file']} ({info['format']})")
+            self.info_labels["Date"].setText(info["date"])
+            self.info_labels["Rows"].setText(f"{info['rows']:,}")
+            self.info_labels["Cashiers"].setText(str(info["cashiers"]))
+            self.info_labels["Value"].setText(f"€{info['total_value']:,.2f}")
 
             # Populate dup_table (with verdicts)
             self._populate_dup_table()
 
-            # Collect suspicious rows
-            if not sus.empty:
-                for _, grp in sus.groupby(sus_keys, dropna=False):
-                    if len(grp) < 2: continue
-                    for idx, r in grp.iterrows():
-                        rd = self._row_dict(idx, r)
-                        self.app._sus_rows.append(rd)
-                        self.sus_table.add_row({
-                            "Line":    idx + 2,
-                            "Cashier": str(r['Cashier Name'])[:22],
-                            "Amount":  f"€{float(r[AMOUNT]):,.2f}",
-                            "Slip":    str(r[LODGEMENT])[:15],
-                        })
+            # Suspicious rows table
+            sus_rows = self.app._sus_rows
+            for rd in sus_rows:
+                self.sus_table.add_row({
+                    "Line":    rd["_line"],
+                    "Cashier": str(rd['Cashier Name'])[:22],
+                    "Amount":  f"€{float(rd[AMOUNT]):,.2f}",
+                    "Slip":    str(rd[LODGEMENT])[:15],
+                })
 
             # Wire sus table double-click
-            sus_rows = self.app._sus_rows
             try: self.sus_table.rowDoubleClicked.disconnect()
             except Exception: pass
             def _on_sus_dbl(displayed_row):
@@ -721,10 +487,7 @@ class IntegrityPage(QWidget):
                         self._show_detail(rd); return
             self.sus_table.rowDoubleClicked.connect(_on_sus_dbl)
 
-            self.archive_discrepancies(df, report_date)
-            self.archive_customer_discrepancies(df, report_date)
-            self.archive_all_discrepancies(df, report_date)
-            self._save_performance_history(df, report_date)
+            archive_report(df, report_date)
 
             search_page = self.app.pages.get('search')
             if search_page:

@@ -23,6 +23,7 @@
 5. [File Format Reference](#5-file-format-reference)
 6. [Workflow Guide](#6-workflow-guide)
 7. [Troubleshooting](#7-troubleshooting)
+8. [For Developers](#8-for-developers)
 
 ---
 
@@ -461,6 +462,8 @@ The report doesn't have the expected `Operator Id` or `Total Processed` columns.
 
 The Cashier Database doesn't have an entry for that operator ID. Go to **Cashier Database** and add the entry, or use **Import CSV** to bulk-load a mapping file.
 
+If names show as numbers ending in `.0` (e.g. `1001.0`) for **every** cashier in a report, the report has at least one row with a blank `Operator Id`. That makes the whole column load as decimals, so no ID matches the database. This is a known issue; until it's fixed, remove or fill the blank rows before importing.
+
 ### NON-VMS scan finds no files
 
 - Verify the **IR Path** and **Jollyes** paths point to the correct folders.
@@ -486,6 +489,28 @@ Run from the command line to see the full error output:
 python main.py
 ```
 Common causes: missing PySide6 (`pip install PySide6`), Python version below 3.10, or a corrupted `config.py`.
+
+---
+
+## 8. For Developers
+
+### Code layout
+
+| Folder / file | What's in it |
+|---------------|--------------|
+| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check). |
+| `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: cashier scoring, duplicate verdicts, shared helpers. |
+| `pages/`, `widgets/`, `main_window.py` | The PySide6 user interface. Pages call into `engine/` rather than doing the calculations themselves. |
+
+Keep new calculations in `engine/` (or another Qt-free module) so they can be tested and reused by scripts.
+
+### Running the tests
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+The tests don't need PySide6. All test data is fictional — never put real reports, names or figures in `tests/`.
 
 ---
 
