@@ -118,17 +118,20 @@ _compute_targets = compute_targets
 # ── Per-session scoring ───────────────────────────────────────────────────────
 
 def score_one_session(slips, value, op_id, mistakes,
-                      target_slips, target_value) -> dict:
+                      target_slips, target_value, target_per_hour=None) -> dict:
     """Compute base score (0–90) for a single working day.
 
     Returns a dict with every component score and metadata.
     Consistency is always 0.0 here — computed separately by the caller.
+    target_per_hour defaults to _TARGET_PER_HOUR (25) when not given.
     """
+    if target_per_hour is None:
+        target_per_hour = _TARGET_PER_HOUR
     hours        = shift_hours(op_id)
     slips_per_hr = slips / hours if hours else 0.0
 
     # Throughput: capped at 1.2× target to prevent over-reward for extreme speed
-    thr_ratio  = slips_per_hr / _TARGET_PER_HOUR
+    thr_ratio  = slips_per_hr / target_per_hour
     thr_score  = min(float(_W_THROUGHPUT), min(thr_ratio, 1.2) * _W_THROUGHPUT)
 
     val_score  = min(float(_W_VALUE),

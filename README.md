@@ -374,6 +374,18 @@ Fonts marked with a non-system name (DM Sans, Jakarta, IBM Plex, Roboto) must be
 
 Full color themes are scaffolded for a future release. The current active theme is **Deep Obsidian** — a black-to-navy palette with blue accent tones throughout.
 
+### Team Targets
+
+The targets the team works to, set by the manager. Type a number in each box you want a target for, leave the rest empty, and click **Save Targets**.
+
+- Targets are saved in **one shared file**, `targets.json` in the Spectre folder (`BASE_PATH`). Everyone who runs Spectre from the same shared folder works to the same targets. Opening Settings again shows any changes someone else saved.
+- Every target is optional. An empty box means no target.
+- The first three targets are **used in every cashier's score**:
+  - **Daily slips per cashier** and **Daily value per cashier**: when empty, the team's historical average is used (the previous behaviour).
+  - **Slips per hour**: when empty, 25 per hour is used.
+- The **Cashier Performance** tab shows which targets it is using and whether each came from the manager or from history.
+- The other targets (team score, lowest acceptable score, team totals per day, mistakes per 100 slips, and the Integrity Check, Slip Audit, Discrepancies, Risk Scoring and Data Quality limits) don't change any score. They are what actual results are compared against when asking how far the team is from its goals.
+
 ---
 
 ## 5. File Format Reference
@@ -498,7 +510,7 @@ Common causes: missing PySide6 (`pip install PySide6`), Python version below 3.1
 
 | Folder / file | What's in it |
 |---------------|--------------|
-| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period, team summary, ranking, logging mistakes). |
+| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period, team summary, ranking, logging mistakes), `targets.py` (team targets: shared file, validation, actual-vs-target comparison). |
 | `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: cashier scoring, duplicate verdicts, shared helpers. |
 | `pages/`, `widgets/`, `main_window.py` | The PySide6 user interface. Pages call into `engine/` rather than doing the calculations themselves. |
 

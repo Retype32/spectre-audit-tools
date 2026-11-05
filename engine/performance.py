@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from config import AMOUNT, MISTAKE_TYPES, MISTAKES_DB, OPERATOR, PERFORMANCE_HISTORY_DB
+from engine.targets import load_targets
 from scoring import (
     _RECENCY, _TARGET_PER_HOUR, _W_ACCURACY, _W_CLEAN_RATIO, _W_SLIPS,
     _W_THROUGHPUT, _W_VALUE, SCOPES, compute_targets, consistency_score, grade,
@@ -31,9 +32,13 @@ DATE_FMT = "%d.%m.%Y"
 @dataclass
 class PerformanceResult:
     rows: list = field(default_factory=list)   # one dict per cashier
-    target_slips: float = 0.0                  # daily targets (historical average)
+    target_slips: float = 0.0                  # daily targets used in the score
     target_value: float = 0.0
     scope: str = SESSION_SCOPE
+    target_per_hour: float = _TARGET_PER_HOUR
+    # where each scoring target came from: "manager", "history" or "default"
+    target_sources: dict = field(default_factory=dict)
+    working_days: list = field(default_factory=list)   # dates covered by the period
 
 
 def scope_cutoff(scope, today):
@@ -54,12 +59,15 @@ def scope_cutoff(scope, today):
 
 
 def compute_performance(df, scope, active_date=None, today=None,
-                        history_path=PERFORMANCE_HISTORY_DB, mistakes_by_c=None):
+                        history_path=PERFORMANCE_HISTORY_DB, mistakes_by_c=None,
+                        targets=None):
     """Score every cashier for `scope` (one of scoring.SCOPES).
 
     df:            the loaded report (needs "Cashier Name")
     active_date:   that report's date (DD.MM.YYYY)
     mistakes_by_c: {cashier: [mistake, ...]}; read from the mistake files if None
+    targets:       manager targets (engine.targets); read from the shared file if None.
+                   Daily slips / daily value / slips per hour override the defaults.
 
     Returns a PerformanceResult, or None if the report has no cashier column.
     """
@@ -146,6 +154,18 @@ def compute_performance(df, scope, active_date=None, today=None,
             pass
     target_slips, target_value = compute_targets(full_hist_df)
 
+    # Manager-set targets replace the history average / built-in default
+    if targets is None:
+        targets = load_targets()
+    sources = {"slips": "history", "value": "history", "per_hour": "default"}
+    if targets.get("cashier_daily_slips"):
+        target_slips, sources["slips"] = float(targets["cashier_daily_slips"]), "manager"
+    if targets.get("cashier_daily_value"):
+        target_value, sources["value"] = float(targets["cashier_daily_value"]), "manager"
+    target_per_hour = _TARGET_PER_HOUR
+    if targets.get("slips_per_hour"):
+        target_per_hour, sources["per_hour"] = float(targets["slips_per_hour"]), "manager"
+
     # ── Mistakes ──────────────────────────────────────────────
     if mistakes_by_c is None:
         mistakes_by_c = mistakes_by_cashier(cutoff)
@@ -160,6 +180,7 @@ def compute_performance(df, scope, active_date=None, today=None,
 
     # ── Build result rows ─────────────────────────────────────
     raw_rows = []
+    working_days = set()
 
     for name in sorted(all_cashiers):
         op_id = cashier_op_ids.get(name, "")
@@ -170,8 +191,13 @@ def compute_performance(df, scope, active_date=None, today=None,
             value    = session_val.get(name, 0.0)
             mistakes = session_mistakes.get(name, [])
 
-            sc = score_one_session(slips, value, op_id, mistakes, target_slips, target_value)
+            sc = score_one_session(slips, value, op_id, mistakes, target_slips, target_value,
+                                   target_per_hour)
             sc["consistency"] = None  # explicitly N/A
+            try:
+                working_days.add(datetime.datetime.strptime(active_date, DATE_FMT).date())
+            except Exception:
+                working_days.add(today)
 
             raw_rows.append({
                 "name":          name,
@@ -179,7 +205,7 @@ def compute_performance(df, scope, active_date=None, today=None,
                 "value":         value,
                 "avg_val":       value / slips if slips else 0.0,
                 "slips_per_hr":  sc["slips_per_hr"],
-                "throughput":    sc["slips_per_hr"] / _TARGET_PER_HOUR,
+                "throughput":    sc["slips_per_hr"] / target_per_hour,
                 "accuracy":      sc["acc_score"],
                 "consistency":   None,
                 "score":         int(round(sc["total"])),
@@ -230,10 +256,11 @@ def compute_performance(df, scope, active_date=None, today=None,
                 date_str = entry_date.strftime(DATE_FMT) if entry_date else ""
                 day_mist = mistakes_by_date.get(date_str, [])
                 sc_day   = score_one_session(slips, value, op_id, day_mist,
-                                             target_slips, target_value)
+                                             target_slips, target_value, target_per_hour)
                 daily_scores.append(sc_day["total"])
                 if entry_date:
                     dated_daily.append((entry_date, sc_day["total"]))
+                    working_days.add(entry_date)
                 total_slips += slips
                 total_value += value
 
@@ -260,7 +287,7 @@ def compute_performance(df, scope, active_date=None, today=None,
             avg_spd = total_slips / sessions
             avg_vpd = total_value / sessions
             avg_sph = avg_spd / hpd if hpd else 0.0
-            thr_r   = avg_sph / _TARGET_PER_HOUR
+            thr_r   = avg_sph / target_per_hour
             per_err = len(all_mistakes_flat) / total_slips if total_slips else 0.0
 
             d_thr   = round(min(float(_W_THROUGHPUT), min(thr_r, 1.2) * _W_THROUGHPUT), 1)
@@ -289,7 +316,7 @@ def compute_performance(df, scope, active_date=None, today=None,
                 "value":         total_value,
                 "avg_val":       total_value / total_slips if total_slips else 0.0,
                 "slips_per_hr":  sample_sc["slips_per_hr"],
-                "throughput":    sample_sc["slips_per_hr"] / _TARGET_PER_HOUR,
+                "throughput":    sample_sc["slips_per_hr"] / target_per_hour,
                 "accuracy":      sample_sc["acc_score"],
                 "consistency":   cons,
                 "score":         int(round(final_score)),
@@ -304,7 +331,9 @@ def compute_performance(df, scope, active_date=None, today=None,
             })
 
     return PerformanceResult(rows=raw_rows, target_slips=target_slips,
-                             target_value=target_value, scope=scope)
+                             target_value=target_value, scope=scope,
+                             target_per_hour=target_per_hour, target_sources=sources,
+                             working_days=sorted(working_days))
 
 
 def team_summary(rows):

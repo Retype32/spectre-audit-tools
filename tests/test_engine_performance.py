@@ -40,9 +40,10 @@ class _TempDir(unittest.TestCase):
         pd.DataFrame(rows, columns=["Date", "Name", "Operator_Id", "System Count",
                                     "Total Value"]).to_csv(self.hist, index=False)
 
-    def perf(self, df, scope, mistakes=None):
+    def perf(self, df, scope, mistakes=None, targets=None):
         return compute_performance(df, scope, active_date=ACTIVE, today=TODAY,
-                                   history_path=self.hist, mistakes_by_c=mistakes or {})
+                                   history_path=self.hist, mistakes_by_c=mistakes or {},
+                                   targets=targets or {})
 
 
 class TestScopeCutoff(unittest.TestCase):

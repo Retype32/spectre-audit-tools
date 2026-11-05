@@ -1,14 +1,19 @@
 """
-pages/settings.py — Settings page (appearance only, no functional code).
+pages/settings.py — Settings page: appearance and team targets.
 """
+import datetime
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QSizePolicy, QApplication, QScrollArea
+    QFrame, QSizePolicy, QApplication, QScrollArea, QGridLayout, QLineEdit
 )
 
 import theme as _theme
 from theme import Theme, FONT_PRESETS, set_font_preset, build_qss
+from config import TARGETS_FILE
+from engine.targets import GROUPS, TARGETS, TargetError, read_targets_file, save_targets
 
 
 # =============================================================================
@@ -34,9 +39,15 @@ def _divider():
 # Settings page
 # =============================================================================
 
+def _fmt_target(value):
+    """Show 220.0 as "220" and 2.5 as "2.5" (no scientific notation)."""
+    return str(int(value)) if float(value).is_integer() else f"{value}"
+
+
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._targets_dirty = False
         self._build()
 
     # ------------------------------------------------------------------
@@ -69,7 +80,7 @@ class SettingsPage(QWidget):
         )
         root.addWidget(heading)
 
-        sub = QLabel("Appearance & display preferences")
+        sub = QLabel("Appearance, display preferences and team targets")
         sub.setStyleSheet(f"color:{Theme.TXT_3}; font-size:13px; margin-top:-16px;")
         root.addWidget(sub)
 
@@ -80,6 +91,10 @@ class SettingsPage(QWidget):
         # ── Section: Theme ───────────────────────────────────────────
         root.addWidget(_section_label("COLOR THEME"))
         root.addWidget(self._build_theme_card())
+
+        # ── Section: Team targets ────────────────────────────────────
+        root.addWidget(_section_label("TEAM TARGETS"))
+        root.addWidget(self._build_targets_card())
 
         root.addStretch()
 
@@ -267,3 +282,138 @@ class SettingsPage(QWidget):
         btn.setStyleSheet(style)
         btn.setEnabled(active)
         return btn
+
+    # ------------------------------------------------------------------
+    # Team targets
+    # ------------------------------------------------------------------
+    def _build_targets_card(self):
+        card = QFrame()
+        card.setObjectName("card_targets")
+        card.setStyleSheet(
+            f"QFrame#card_targets {{"
+            f"  background:{Theme.SURFACE}; border:1px solid {Theme.BORDER_S}; border-radius:8px;"
+            f"}}"
+        )
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setSpacing(14)
+
+        title = QLabel("Team Targets")
+        title.setStyleSheet(f"color:{Theme.TXT}; font-size:14px; font-weight:600;")
+        lay.addWidget(title)
+
+        desc = QLabel(
+            "Targets the team works to. They are saved in one shared file, so everyone "
+            "using this Spectre folder sees the same targets. Leave a box empty for no target. "
+            "The first three are used in every cashier's performance score."
+        )
+        desc.setStyleSheet(f"color:{Theme.TXT_3}; font-size:12px;")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+        lay.addWidget(_divider())
+
+        self._target_edits = {}
+        for group in GROUPS:
+            lay.addWidget(_section_label(group.upper()))
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(14)
+            grid.setVerticalSpacing(6)
+            grid.setColumnStretch(3, 1)
+            for row, t in enumerate(x for x in TARGETS if x.group == group):
+                name = QLabel(t.label)
+                name.setStyleSheet(f"color:{Theme.TXT_2}; font-size:12px;")
+                name.setFixedWidth(230)
+
+                edit = QLineEdit()
+                edit.setFixedWidth(120)
+                if t.key == "slips_per_hour":
+                    edit.setPlaceholderText("25 if empty")
+                elif t.in_score:
+                    edit.setPlaceholderText("History avg")
+                else:
+                    edit.setPlaceholderText("No target")
+                edit.setToolTip(t.description)
+                edit.textEdited.connect(self._on_target_edited)
+                self._target_edits[t.key] = edit
+
+                unit = QLabel(f"{'at least' if t.better == 'higher' else 'at most'}  ·  {t.unit}")
+                unit.setStyleSheet(f"color:{Theme.TXT_3}; font-size:11px;")
+                unit.setFixedWidth(130)
+
+                hint = QLabel(t.description)
+                hint.setStyleSheet(f"color:{Theme.TXT_DIM}; font-size:11px;")
+                hint.setWordWrap(True)
+
+                grid.addWidget(name, row, 0)
+                grid.addWidget(edit, row, 1)
+                grid.addWidget(unit, row, 2)
+                grid.addWidget(hint, row, 3)
+            lay.addLayout(grid)
+
+        lay.addWidget(_divider())
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        save_btn = QPushButton("Save Targets")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._save_targets)
+        reload_btn = QPushButton("Reload")
+        reload_btn.setToolTip("Discard unsaved changes and show the targets in the shared file")
+        reload_btn.clicked.connect(self._load_targets)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(reload_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        self._targets_status = QLabel()
+        self._targets_status.setWordWrap(True)
+        self._targets_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self._targets_status)
+
+        self._load_targets()
+        return card
+
+    def _set_targets_status(self, text, level="info"):
+        color = {"ok": Theme.OK, "warn": Theme.WARN, "error": Theme.DANGER}.get(level, Theme.TXT_3)
+        self._targets_status.setStyleSheet(f"color:{color}; font-size:11px;")
+        self._targets_status.setText(text)
+
+    def _on_target_edited(self, _text):
+        self._targets_dirty = True
+        self._set_targets_status("Unsaved changes.", "warn")
+
+    def _load_targets(self):
+        targets, problem = read_targets_file(TARGETS_FILE)
+        for key, edit in self._target_edits.items():
+            edit.setText(_fmt_target(targets[key]) if key in targets else "")
+        self._targets_dirty = False
+        if problem:
+            self._set_targets_status(f"Some saved targets could not be used: {problem}", "warn")
+        elif targets:
+            self._set_targets_status(f"{len(targets)} target(s) set.  Shared file: {TARGETS_FILE}")
+        else:
+            self._set_targets_status(f"No targets set yet.  Shared file: {TARGETS_FILE}")
+
+    def _save_targets(self):
+        values = {key: edit.text() for key, edit in self._target_edits.items()}
+        try:
+            saved = save_targets(values, TARGETS_FILE)
+        except TargetError as e:
+            self._set_targets_status("Not saved:\n" + "\n".join(e.errors), "error")
+            return
+        except Exception as e:
+            logging.exception("Saving team targets")
+            self._set_targets_status(f"Not saved: could not write {TARGETS_FILE}: {e}", "error")
+            return
+        for key, edit in self._target_edits.items():
+            edit.setText(_fmt_target(saved[key]) if key in saved else "")
+        self._targets_dirty = False
+        self._set_targets_status(
+            f"Saved {datetime.datetime.now():%H:%M}: {len(saved)} target(s).  "
+            f"Shared file: {TARGETS_FILE}", "ok")
+        logging.info(f"Team targets saved: {saved}")
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Pick up targets someone else saved, unless there are unsaved edits here
+        if not self._targets_dirty:
+            self._load_targets()

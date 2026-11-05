@@ -19,8 +19,10 @@ Mistake penalties (deducted after metrics, final score floored at 0):
   Small Mistake        −3 pts each
 
 Confirmed duplicates from Integrity Check auto-map to Duplicate Slip penalties.
-Targets are derived from the historical average in Audit_Database.csv — not from
-the best performer on any given day, which removes inter-cashier score distortion.
+Daily slips / daily value targets are the manager's targets (Settings → Team
+Targets) when set; otherwise the historical average in Performance_History.csv —
+never the best performer on a given day, which removes inter-cashier distortion.
+The slips-per-hour target is the manager's target, or 25 when not set.
 
 Recency weighting (3M / 6M / 12M views):
   Most recent third of period → 50 % weight
@@ -843,11 +845,23 @@ class CashierPerformancePage(QWidget):
             )
 
             # Targets note
-            self._targets_lbl.setText(
-                f"Targets (from history)\n"
-                f"Daily slips:  {target_slips:.0f}\n"
-                f"Daily value:  €{target_value:,.0f}"
-            )
+            src = result.target_sources
+            if "manager" not in src.values():
+                self._targets_lbl.setText(
+                    f"Targets (from history)\n"
+                    f"Daily slips:  {target_slips:.0f}\n"
+                    f"Daily value:  €{target_value:,.0f}"
+                )
+            else:
+                def _from(key):
+                    return {"manager": "set by manager", "history": "from history"}.get(
+                        src.get(key), "default")
+                self._targets_lbl.setText(
+                    f"Targets\n"
+                    f"Daily slips:  {target_slips:.0f}  ({_from('slips')})\n"
+                    f"Daily value:  €{target_value:,.0f}  ({_from('value')})\n"
+                    f"Slips/hr:  {result.target_per_hour:g}  ({_from('per_hour')})"
+                )
             self._perf_score_card.setVisible(True)
             self._no_data.setVisible(False)
             self._render_rows(raw_rows)

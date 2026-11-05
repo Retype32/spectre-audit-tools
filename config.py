@@ -85,6 +85,10 @@ DUPLICATE_VERDICTS_DB = os.path.join(DISCREPANCY_DB_PATH, "duplicate_verdicts.cs
 ALL_DISC_DB           = os.path.join(DISCREPANCY_DB_PATH, "All_Discrepancies_DB.csv")
 MISTAKES_DB           = os.path.join(DISCREPANCY_DB_PATH, "mistakes.csv")
 
+# Team targets set by the manager (Settings → Team Targets). Kept under
+# BASE_PATH so everyone using the shared folder works to the same targets.
+TARGETS_FILE          = os.path.join(BASE_PATH, "targets.json")
+
 # Mistake types and their penalty severity (points deducted from final score)
 MISTAKE_TYPES = {
     "duplicate_slip":     {"label": "Duplicate Slip",      "points": 12},
