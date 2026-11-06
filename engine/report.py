@@ -5,6 +5,7 @@ Pure pandas, no Qt. Used by the Integrity Check page and by anything else
 that needs a report in Spectre's standard shape (tests, scripts, the agent).
 """
 import os
+import re
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -26,6 +27,17 @@ MIN_AMOUNT = 1.0          # rows below this are dropped
 EMPTY_WALLET = "[EMPTY]"
 NO_LODGEMENT = "[N/A]"
 CASHIER_NAME = "Cashier Name"
+
+
+_FLOAT_ID = re.compile(r"^-?\d+\.0+$")
+
+
+def normalise_id(value):
+    """'1001.0' → '1001'. When an ID column has a blank cell, pandas reads the
+    whole column as decimals; this puts the IDs back the way they were typed.
+    Anything that isn't a whole number ending in .0 is returned unchanged."""
+    text = str(value).strip()
+    return text.split(".")[0] if _FLOAT_ID.match(text) else text
 
 
 class ReportError(Exception):
@@ -89,12 +101,12 @@ def clean(df):
     denoms = denomination_columns(df)
     for col in denoms:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-    df[OPERATOR] = df[OPERATOR].astype(str).str.strip()
+    df[OPERATOR] = df[OPERATOR].map(normalise_id)
     if WALLET in df.columns:
-        df[WALLET] = df[WALLET].astype(str).str.strip().replace(['nan', 'None', ''], EMPTY_WALLET)
+        df[WALLET] = df[WALLET].map(normalise_id).replace(['nan', 'None', ''], EMPTY_WALLET)
     else:
         df[WALLET] = EMPTY_WALLET
-    df[LODGEMENT] = df[LODGEMENT].astype(str).str.strip() if LODGEMENT in df.columns else NO_LODGEMENT
+    df[LODGEMENT] = df[LODGEMENT].map(normalise_id) if LODGEMENT in df.columns else NO_LODGEMENT
     return df, denoms
 
 

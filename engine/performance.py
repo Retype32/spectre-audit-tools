@@ -20,7 +20,8 @@ A "row" is one cashier's result for the period, as a plain dict:
     name, op_id, txn, value, avg_val, slips_per_hr, throughput (share of
     slip target met), accuracy, consistency, score, grade, breakdown,
     mistakes, penalty, mistakes_list, sessions, days_360, days_other,
-    period_base and orphan_penalty (multi-day scopes only)
+    daily (one entry per scored day), period_base and orphan_penalty
+    (multi-day scopes only)
 """
 import datetime
 import logging
@@ -120,7 +121,7 @@ def _collect_entries(df, scope, active_date, today, history_path, report_fmt, cu
                 fmt = _fmt_of(row.get("Format"))
                 if active_date and d == sess_date and fmt == _fmt_of(report_fmt):
                     continue  # the loaded report already covers this day
-                if cutoff is not None and d < cutoff:
+                if (cutoff is not None and d < cutoff) or d > today:
                     continue
                 if n not in ops:
                     op = str(row.get("Operator_Id", "")).strip()
@@ -247,7 +248,7 @@ def compute_performance(df, scope, active_date=None, today=None,
         for m in cashier_mistakes:
             by_date_m.setdefault(m["date"], []).append(m)
 
-        daily, dated = [], []
+        daily, dated, day_rows = [], [], []
         total_slips = total_value = expected_slips = 0.0
         for e in days_worked:
             info = days[e["date"]]
@@ -256,6 +257,10 @@ def compute_performance(df, scope, active_date=None, today=None,
                            info["rate_target"], info["cash_per_hour_baseline"])
             daily.append(sc)
             dated.append((e["date"], sc["total"]))
+            day_rows.append({"date": e["date"].strftime(DATE_FMT), "slips": e["slips"],
+                             "value": e["value"], "slips_per_hr": sc["slips_per_hr"],
+                             "rate_target": info["rate_target"], "score": sc["total"],
+                             "mistakes": len(day_m), "penalty": sc["penalty"]})
             total_slips += e["slips"]; total_value += e["value"]
             expected_slips += info["rate_target"] * hours
 
@@ -275,6 +280,7 @@ def compute_performance(df, scope, active_date=None, today=None,
             "mistakes_list": cashier_mistakes, "sessions": sessions,
             "days_360": excluded.get(name, {}).get("360", 0),
             "days_other": excluded.get(name, {}).get("other", 0),
+            "daily": day_rows,
         }
 
         if session_only:

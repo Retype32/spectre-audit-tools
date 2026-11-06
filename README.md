@@ -52,6 +52,12 @@ cd Spectre_v2
 python main.py
 ```
 
+### Building Spectre.exe (no Python needed on the PC that runs it)
+
+On a Windows PC with Python 3.10 or newer, double-click **`build_exe.bat`** in the Spectre folder. It installs what the build needs, runs the tests and creates **`dist\Spectre.exe`** — one file with everything inside.
+
+Copy `Spectre.exe` to the shared Spectre folder and put `local_settings.json` next to it; anyone can then start Spectre by double-clicking it. Rebuild after each update to the code. The first start of the `.exe` takes a few seconds while it unpacks.
+
 ### TEST vs Production Mode
 
 Open `config.py` and find the `VERSION_MODE` constant near the top:
@@ -395,6 +401,10 @@ The targets and rules the team works to, set by the manager. Type a number in ea
 | **360: average cash per slip of at least** | €10,000 | With the next rule, marks a cashier's day as 360 processing. |
 | **360: no more than this many slips** | 100 | A day with more slips is never treated as 360. |
 
+### Data Maintenance
+
+**Fix History IDs** repairs history saved by older versions, where a report with one blank Operator Id stored IDs like `1001.0` and those cashiers showed up as numbers. It turns the IDs back into plain numbers and puts names back from the Cashier Database. Every file it changes is backed up first (`<file>.bak-<date>`), and running it again changes nothing.
+
 ### How cashier scores work
 
 Each cashier's working day is scored out of 90, and multi-day periods add up to 10 for consistency:
@@ -501,7 +511,7 @@ The report doesn't have the expected `Operator Id` or `Total Processed` columns.
 
 The Cashier Database doesn't have an entry for that operator ID. Go to **Cashier Database** and add the entry, or use **Import CSV** to bulk-load a mapping file.
 
-If names show as numbers ending in `.0` (e.g. `1001.0`) for **every** cashier in a report, the report has at least one row with a blank `Operator Id`. That makes the whole column load as decimals, so no ID matches the database. This is a known issue; until it's fixed, remove or fill the blank rows before importing.
+If names show as numbers ending in `.0` (e.g. `1001.0`) in history saved by an older version, run **Settings → Data Maintenance → Fix History IDs**. New imports are no longer affected: a blank `Operator Id` cell used to make the whole column load as decimals.
 
 ### NON-VMS scan finds no files
 
@@ -537,11 +547,37 @@ Common causes: missing PySide6 (`pip install PySide6`), Python version below 3.1
 
 | Folder / file | What's in it |
 |---------------|--------------|
-| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period: which days count, each day's targets, team summary, ranking, logging mistakes), `targets.py` (team targets and rules: shared file, validation, actual-vs-target comparison), `bags.py` (daily bag log), `volume.py` (monthly cash volume per cashier). |
+| `engine/` | Audit logic with **no Qt dependency**: `report.py` (load + clean VMS/ISA reports), `detection.py` (High Risk Duplicates, Suspicious Patterns, Shared Assets), `archive.py` (history files written after each check), `performance.py` (cashier scores for a period: which days count, each day's targets, team summary, ranking, logging mistakes), `targets.py` (team targets and rules: shared file, validation, actual-vs-target comparison), `bags.py` (daily bag log), `volume.py` (monthly cash volume per cashier), `maintenance.py` (Fix History IDs). |
+| `agent/` | The agent toolkit: read-only tools, tool registry, name privacy and the End of Day summary (see below). |
 | `scoring.py`, `verdicts.py`, `utils_core.py` | Other Qt-free logic: the per-day score and 360 rule, duplicate verdicts, shared helpers. |
 | `pages/`, `widgets/`, `main_window.py` | The PySide6 user interface. Pages call into `engine/` rather than doing the calculations themselves. |
 
 Keep new calculations in `engine/` (or another Qt-free module) so they can be tested and reused by scripts.
+
+### Agent toolkit (`agent/`)
+
+Everything the future AI assistant needs except the model itself. All of it reads the saved history and never writes:
+
+| File | What it does |
+|------|--------------|
+| `agent/tools.py` | One function per manager question: `team_overview`, `targets_vs_actual`, `cashier_ranking` (with what cost each cashier points), `cashier_profile`, `day_summary`, `monthly_cash_leaders`. |
+| `agent/registry.py` | The same tools described in Claude API format, and `run_tool()`, which checks the arguments and logs every call to `logs\agent_YYYYMM.jsonl` (tool, arguments, success — not the figures). |
+| `agent/privacy.py` | Swaps cashier names for "Cashier <ID>" before anything would go online, and back again for display. |
+| `agent/summary.py` | The plain-English **End of Day** summary (button on the Cashier Performance tab). |
+
+From a terminal in the Spectre folder:
+
+```bash
+python -m agent summary 05.11.2026
+```
+
+```bash
+python -m agent tools
+```
+
+```bash
+python -m agent run cashier_ranking "{\"period\": \"This Week\"}"
+```
 
 ### Running the tests
 
@@ -550,6 +586,10 @@ python -m unittest discover -s tests -t .
 ```
 
 The tests don't need PySide6. All test data is fictional — never put real reports, names or figures in `tests/`.
+
+### Building the .exe
+
+`Spectre.spec` is the PyInstaller recipe used by `build_exe.bat` (see section 1). It bundles `main.py`, every page and the sidebar icons into one windowed `Spectre.exe`. PyInstaller can only build for the system it runs on, so the Windows `.exe` must be built on Windows.
 
 ---
 

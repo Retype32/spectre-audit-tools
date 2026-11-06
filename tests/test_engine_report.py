@@ -12,7 +12,7 @@ import pandas as pd
 
 from config import AMOUNT, LODGEMENT, OPERATOR, WALLET
 from engine.report import (EMPTY_WALLET, NO_LODGEMENT, ReportError, load_report,
-                           summarise)
+                           normalise_id, summarise)
 
 CASHIERS = {"1001": "Alice Example", "1002": "Bob Example"}
 
@@ -90,13 +90,27 @@ class TestBlankOperatorCell(_TempDir):
         df = load_report(self.write_csv(self.CSV), cashier_map={}).df
         self.assertEqual(df[AMOUNT].tolist(), [100.0, 50.0])
 
-    @unittest.expectedFailure
     def test_ids_keep_integer_form(self):
-        # KNOWN ISSUE: one blank Operator Id cell makes pandas read the column
-        # as floats, so IDs become "1001.0" and no longer match the Cashier
-        # Database. Remove @expectedFailure once this is fixed.
+        # One blank Operator Id cell makes pandas read the column as decimals;
+        # IDs must still come out as "1001" so they match the Cashier Database.
         df = load_report(self.write_csv(self.CSV), cashier_map=CASHIERS).df
         self.assertEqual(df[OPERATOR].tolist(), ["1001", "1002"])
+        self.assertEqual(df["Cashier Name"].tolist(), ["Alice Example", "Bob Example"])
+
+    def test_numeric_wallets_and_slips_with_blanks(self):
+        csv = ("Operator Id,Wallet Number,Lodgement Slip Number,Total Processed\n"
+               "1001,555,9001,10\n1001,,,20\n")
+        df = load_report(self.write_csv(csv, "w.csv"), cashier_map={}).df
+        self.assertEqual(df[WALLET].tolist(), ["555", EMPTY_WALLET])
+        self.assertEqual(df[LODGEMENT].tolist(), ["9001", "nan"])
+
+
+class TestNormaliseId(unittest.TestCase):
+    def test_cases(self):
+        for raw, expected in [("1001.0", "1001"), (1001.0, "1001"), (" 42.00 ", "42"),
+                              ("1001", "1001"), ("1001.5", "1001.5"), ("ABC-9.0", "ABC-9.0"),
+                              ("00123", "00123"), ("nan", "nan")]:
+            self.assertEqual(normalise_id(raw), expected, raw)
 
 
 class TestMissingColumns(_TempDir):

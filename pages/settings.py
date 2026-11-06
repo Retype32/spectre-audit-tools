@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 import theme as _theme
 from theme import Theme, FONT_PRESETS, set_font_preset, build_qss
 from config import TARGETS_FILE
+from engine.maintenance import tidy_history_ids
 from engine.targets import GROUPS, TARGETS, TargetError, read_targets_file, save_targets
+from utils import msg_yes
 
 
 # =============================================================================
@@ -95,6 +97,10 @@ class SettingsPage(QWidget):
         # ── Section: Team targets ────────────────────────────────────
         root.addWidget(_section_label("TEAM TARGETS"))
         root.addWidget(self._build_targets_card())
+
+        # ── Section: Data maintenance ────────────────────────────────
+        root.addWidget(_section_label("DATA MAINTENANCE"))
+        root.addWidget(self._build_maintenance_card())
 
         root.addStretch()
 
@@ -418,3 +424,66 @@ class SettingsPage(QWidget):
         # Pick up targets someone else saved, unless there are unsaved edits here
         if not self._targets_dirty:
             self._load_targets()
+
+    # ------------------------------------------------------------------
+    # Data maintenance
+    # ------------------------------------------------------------------
+    def _build_maintenance_card(self):
+        card = QFrame()
+        card.setObjectName("card_maint")
+        card.setStyleSheet(
+            f"QFrame#card_maint {{"
+            f"  background:{Theme.SURFACE}; border:1px solid {Theme.BORDER_S}; border-radius:8px;"
+            f"}}"
+        )
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(24, 20, 24, 24)
+        lay.setSpacing(12)
+        title = QLabel("Fix IDs saved as decimals")
+        title.setStyleSheet(f"color:{Theme.TXT}; font-size:14px; font-weight:600;")
+        lay.addWidget(title)
+        desc = QLabel(
+            "Older versions saved IDs like 1001.0 when a report had a blank Operator Id, so "
+            "those cashiers appeared as numbers in history. This repairs the saved history "
+            "files and puts names back from the Cashier Database. Each file is backed up "
+            "first, and running it again changes nothing."
+        )
+        desc.setStyleSheet(f"color:{Theme.TXT_3}; font-size:12px;")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+        row = QHBoxLayout()
+        btn = QPushButton("Fix History IDs")
+        btn.clicked.connect(self._run_tidy)
+        row.addWidget(btn)
+        row.addStretch()
+        lay.addLayout(row)
+        self._tidy_status = QLabel()
+        self._tidy_status.setWordWrap(True)
+        self._tidy_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._tidy_status.setStyleSheet(f"color:{Theme.TXT_3}; font-size:11px;")
+        lay.addWidget(self._tidy_status)
+        return card
+
+    def _run_tidy(self, confirmed=False):
+        if not confirmed and not msg_yes(
+                self, "Fix History IDs",
+                "Repair IDs saved as decimals in the history files?\n\n"
+                "Every file that changes is backed up first."):
+            return
+        try:
+            report = tidy_history_ids()
+        except Exception as e:
+            logging.exception("Fix History IDs")
+            self._tidy_status.setText(f"Could not finish: {e}")
+            return
+        errors = [r for r in report if r.get("error")]
+        fixed = [r for r in report if r["changed"]]
+        if not report:
+            text = "Nothing to fix — no IDs saved as decimals were found."
+        else:
+            lines = [f"Fixed {sum(r['changed'] for r in fixed)} value(s) in {len(fixed)} file(s). "
+                     f"Backups are next to each file (.bak-…)."]
+            lines += [f"• {r['file']}: {r['changed']}" for r in fixed]
+            lines += [f"• Could not fix {r['file']}: {r['error']}" for r in errors]
+            text = "\n".join(lines)
+        self._tidy_status.setText(text)

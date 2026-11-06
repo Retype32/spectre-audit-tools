@@ -23,12 +23,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QComboBox, QScrollArea, QDialog, QLineEdit,
     QFormLayout, QDialogButtonBox, QDateEdit, QMessageBox,
-    QSizePolicy,
+    QSizePolicy, QApplication, QFileDialog, QPlainTextEdit,
 )
 
 from config import MISTAKE_TYPES
 from theme import Theme
 
+from agent.summary import end_of_day_summary
 from engine.performance import compute_performance, log_mistake, sort_rows, team_summary
 from engine.volume import available_months, current_month, monthly_volume
 from scoring import (
@@ -474,6 +475,66 @@ class MonthlyVolumeDialog(QDialog):
         self._table.sortByColumn(self.COLUMNS.index("Cash/hr €"), Qt.DescendingOrder)
 
 
+# ── End of Day summary dialog ──────────────────────────────────────────────────
+
+class EndOfDayDialog(QDialog):
+    """Plain-English summary of one day, built from the saved history."""
+
+    def __init__(self, date_str=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("End of Day")
+        self.resize(760, 620)
+        self.setStyleSheet(f"QDialog{{background:{Theme.BG};color:{Theme.TXT};}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Day:"))
+        self._date = QDateEdit()
+        self._date.setCalendarPopup(True)
+        self._date.setDisplayFormat("dd.MM.yyyy")
+        start = QDate.fromString(date_str or "", "dd.MM.yyyy")
+        self._date.setDate(start if start.isValid() else QDate.currentDate())
+        self._date.dateChanged.connect(self._load)
+        top.addWidget(self._date)
+        top.addStretch()
+        lay.addLayout(top)
+
+        self._text = QPlainTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setStyleSheet(f"font-size:13px;background:{Theme.SURFACE};")
+        lay.addWidget(self._text, 1)
+
+        btns = QHBoxLayout()
+        copy_btn = QPushButton("Copy"); copy_btn.clicked.connect(self._copy)
+        save_btn = QPushButton("Save as .txt"); save_btn.clicked.connect(self._save)
+        close_btn = QPushButton("Close"); close_btn.clicked.connect(self.accept)
+        btns.addWidget(copy_btn); btns.addWidget(save_btn); btns.addStretch(); btns.addWidget(close_btn)
+        lay.addLayout(btns)
+        self._load()
+
+    def _day(self):
+        return self._date.date().toString("dd.MM.yyyy")
+
+    def _load(self, *_):
+        try:
+            self._text.setPlainText(end_of_day_summary(self._day()))
+        except Exception as e:
+            logging.exception("EndOfDayDialog")
+            self._text.setPlainText(f"Could not build the summary: {e}")
+
+    def _copy(self):
+        QApplication.clipboard().setText(self._text.toPlainText())
+
+    def _save(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save End of Day summary",
+            f"End_of_Day_{self._day()}.txt", "Text (*.txt)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._text.toPlainText())
+
+
 # ── Clickable row widget ───────────────────────────────────────────────────────
 
 class _ClickableRow(QFrame):
@@ -544,6 +605,11 @@ class CashierPerformancePage(QWidget):
         self._log_btn.setMinimumWidth(120)
         self._log_btn.clicked.connect(self._open_log_mistake)
 
+        self._eod_btn = QPushButton("End of Day")
+        self._eod_btn.setFixedHeight(34)
+        self._eod_btn.setMinimumWidth(110)
+        self._eod_btn.clicked.connect(self._open_end_of_day)
+
         self._month_btn = QPushButton("Monthly Cash Volume")
         self._month_btn.setFixedHeight(34)
         self._month_btn.setMinimumWidth(150)
@@ -551,6 +617,7 @@ class CashierPerformancePage(QWidget):
 
         hdr.addWidget(scope_lbl)
         hdr.addWidget(self._scope)
+        hdr.addWidget(self._eod_btn)
         hdr.addWidget(self._month_btn)
         hdr.addWidget(self._log_btn)
         hdr.addWidget(run_btn)
@@ -972,6 +1039,9 @@ class CashierPerformancePage(QWidget):
 
     def _open_monthly_volume(self):
         MonthlyVolumeDialog(self).exec()
+
+    def _open_end_of_day(self):
+        EndOfDayDialog(getattr(self.app, "_active_report_date", None), self).exec()
 
     # ── Render rows ───────────────────────────────────────────────────────────
     def _render_rows(self, rows):
