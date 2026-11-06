@@ -371,11 +371,11 @@ class DetailDialog(QDialog):
             if is_shared:
                 vcell.setStyleSheet(self.SHARED_CELL_CSS.format(
                     FG=Theme.ACCENT, BORDER_S=Theme.BORDER_S,
-                    ACCENT=Theme.ACCENT, MONO=FONT_MONO))
+                    ACCENT=Theme.ACCENT, MONO=FONT_MONO()))
                 vcell.setToolTip("Shared with another open row")
             else:
                 vcell.setStyleSheet(self.VALUE_CELL_CSS.format(
-                    BG=Theme.SURFACE, FG=fg, BORDER_S=Theme.BORDER_S, MONO=FONT_MONO))
+                    BG=Theme.SURFACE, FG=fg, BORDER_S=Theme.BORDER_S, MONO=FONT_MONO()))
             vcell.setAlignment(Qt.AlignCenter)
             vcell.setTextInteractionFlags(Qt.TextSelectableByMouse)
             grid.addWidget(vcell, 1, ci)
