@@ -421,7 +421,7 @@ Mistake penalties are then taken off. A **confirmed duplicate** is the most seri
 
 **Not scored:** 360 processing days (few slips with very high cash per slip — see the 360 rules above) and non-VMS days such as ISA. They are listed under the team score and don't affect the team's averages.
 
-**Monthly Cash Volume** (button on the Cashier Performance tab) shows each cashier's cash per hour for a month, and why: *Speed ±%* compares their slips per hour with the team, *Size ±%* compares their cash per slip. 360 and non-VMS days are shown separately.
+**Monthly Cash Volume** (button on the **Performance** tab — sidebar → Analytics → Performance) shows each cashier's cash per hour for a month, and why: *Speed ±%* compares their slips per hour with the team, *Size ±%* compares their cash per slip. 360 and non-VMS days are shown separately.
 
 ---
 
@@ -563,7 +563,7 @@ Everything the future AI assistant needs except the model itself. All of it read
 | `agent/tools.py` | One function per manager question: `team_overview`, `targets_vs_actual`, `cashier_ranking` (with what cost each cashier points), `cashier_profile`, `day_summary`, `monthly_cash_leaders`. |
 | `agent/registry.py` | The same tools described in Claude API format, and `run_tool()`, which checks the arguments and logs every call to `logs\agent_YYYYMM.jsonl` (tool, arguments, success — not the figures). |
 | `agent/privacy.py` | Swaps cashier names for "Cashier <ID>" before anything would go online, and back again for display. |
-| `agent/summary.py` | The plain-English **End of Day** summary (button on the Cashier Performance tab). |
+| `agent/summary.py` | The plain-English **End of Day** summary (**End of Day** button on the **Performance** tab — sidebar → Analytics → Performance). |
 
 From a terminal in the Spectre folder:
 
